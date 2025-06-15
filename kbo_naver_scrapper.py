@@ -14,13 +14,12 @@ from selenium.common.exceptions import JavascriptException
 class Scrapper:
     def __init__(self, wait = 10, path = './games/'):
         chrome_options = webdriver.ChromeOptions()
-        chrome_options.add_argument("--no-sandbox")
-        #chrome_options.add_argument("--headless")
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36')
+        chrome_options.add_argument("--no-sandbox") # 샌드박스 기능 비활성화
+        #chrome_options.add_argument("--headless") # GUI 기능 비활성화
+        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36') # User-agent 위조
         self.driver = webdriver.Chrome(options = chrome_options)
         self.driver.implicitly_wait(wait)
         self.path = path
-
 
     # 중계 페이지 내에서 이닝 버튼 찾기
     def find_inning_button(self):
@@ -32,15 +31,31 @@ class Scrapper:
         inning_buttons[:] = [btn for btn in inning_buttons if btn.is_enabled()]
 
         return inning_buttons
+    
+    # HTML request를 통해 이닝 데이터 취득
+    def get_inning_data(self):
+        inning_buttons = self.find_inning_button()
+        inning_data = []
+        for btn in inning_buttons:
+            del self.driver.requests
+            ActionChains(self.driver).move_to_element(btn).click(btn).perform()
+            time.sleep(1)
+            for request in self.driver.requests:
+                if 'inning' in request.querystring:
+                    print(request.querystring[-1])
+                    body = request.response.body.decode('utf-8')
+                    inning_data.append(json.loads(body))
+        
+        return inning_data
+        
 
 if __name__ == "__main__":
     scrapper = Scrapper()
     scrapper.driver.get("https://m.sports.naver.com/game/20250419NCHH02025/relay")
-    inning_buttons = scrapper.find_inning_button()
-
-    time.sleep(1)
-    for btn in inning_buttons:
-        ActionChains(scrapper.driver).move_to_element(btn).click(btn).perform()
+    
+    data = scrapper.get_inning_data()
+    with open('test.json', 'w') as tgtfile:
+        json.dump(data, tgtfile, ensure_ascii= False, indent = 4)
 
     os.system("pause")
 
