@@ -21,6 +21,15 @@ class Scrapper:
         self.driver.implicitly_wait(wait)
         self.path = path
 
+    # 경기 페이지 내에서 탭 이동 버튼 찾기
+    def find_tab_button(self):
+        main_section = self.driver.find_element(By.CSS_SELECTOR, 'div[class^="Home_main_section"]')
+        game_panel = main_section.find_element(By.CSS_SELECTOR, 'section[class^="Home_game_panel"]')
+        game_tab = game_panel.find_element(By.CSS_SELECTOR, 'ul[class^="GameTab_tab_list"]')
+        tab_buttons = game_tab.find_elements(By.CSS_SELECTOR, 'button')
+
+        return tab_buttons
+
     # 중계 페이지 내에서 이닝 버튼 찾기
     def find_inning_button(self):
         main_section = self.driver.find_element(By.CSS_SELECTOR, 'div[class^="Home_main_section"]')
@@ -33,7 +42,9 @@ class Scrapper:
         return inning_buttons
     
     # HTML request를 통해 이닝 데이터 취득
-    def get_inning_data(self):
+    def get_inning_data(self, relay_btn):
+        ActionChains(self.driver).move_to_element(relay_btn).click(relay_btn).perform()
+        time.sleep(1)
         inning_buttons = self.find_inning_button()
         inning_data = []
         for btn in inning_buttons:
@@ -47,15 +58,53 @@ class Scrapper:
                     inning_data.append(json.loads(body))
         
         return inning_data
+    
+    # HTML request를 통해 선수 라인업 데이터 취득
+    def get_lineup_data(self, lineup_btn):
+        del self.driver.requests
+        ActionChains(self.driver).move_to_element(lineup_btn).click(lineup_btn).perform()
+        time.sleep(1)
+        for request in self.driver.requests:
+            if 'preview' in request.path:
+                body = request.response.body.decode('utf-8')
+                lineup_data = json.loads(body)
+        
+        return lineup_data
+    
+    # HTML request를 통해 경기 결과 데이터 취득
+    def get_result_data(self, result_btn):
+        del self.driver.requests
+        ActionChains(self.driver).move_to_element(result_btn).click(result_btn).perform()
+        time.sleep(1)
+        for request in self.driver.requests:
+            if 'record' in request.path:
+                body = request.response.body.decode('utf-8')
+                record_data = json.loads(body)
+        
+        return record_data
+
+    def get_game_data(self, game_url):
+        self.driver.get(game_url)
+        tab_buttons = self.find_tab_button()
+        lineup_data = self.get_lineup_data(tab_buttons[2])
+        inning_data = self.get_inning_data(tab_buttons[3])
+        result_data = self.get_result_data(tab_buttons[6])
+
+        return lineup_data, inning_data, result_data
         
 
 if __name__ == "__main__":
     scrapper = Scrapper()
-    scrapper.driver.get("https://m.sports.naver.com/game/20250419NCHH02025/relay")
+    game_url = "https://m.sports.naver.com/game/20250419NCHH02025"
+
+    ld, ind, rd = scrapper.get_game_data(game_url)
     
-    data = scrapper.get_inning_data()
-    with open('test.json', 'w') as tgtfile:
-        json.dump(data, tgtfile, ensure_ascii= False, indent = 4)
+    with open('lineup.json', 'w') as tgtfile:
+        json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
+    with open('inning.json', 'w') as tgtfile:
+        json.dump(ind, tgtfile, ensure_ascii= False, indent = 4)
+    with open('record.json', 'w') as tgtfile:
+        json.dump(rd, tgtfile, ensure_ascii= False, indent = 4)
 
     os.system("pause")
 
