@@ -1,4 +1,4 @@
-from datetime import datetime
+import datetime
 import json
 import time
 import os
@@ -27,20 +27,24 @@ class Scrapper:
     def click(self, button):
         ActionChains(self.driver).move_to_element(button).click(button).perform()
 
+    # CSS_SELECTOR로 요소 찾기
+    def find_element_CSSS(self, parent, query):
+        return parent.find_element(By.CSS_SELECTOR, query)
+    
     # 경기 페이지 내에서 탭 이동 버튼 찾기
     def find_tab_button(self):
-        main_section = self.driver.find_element(By.CSS_SELECTOR, 'div[class^="Home_main_section"]')
-        game_panel = main_section.find_element(By.CSS_SELECTOR, 'section[class^="Home_game_panel"]')
-        game_tab = game_panel.find_element(By.CSS_SELECTOR, 'ul[class^="GameTab_tab_list"]')
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_main_section"]')
+        game_panel = self.find_element_CSSS(main_section, 'section[class^="Home_game_panel"]')
+        game_tab = self.find_element_CSSS(game_panel, 'ul[class^="GameTab_tab_list"]')
         tab_buttons = game_tab.find_elements(By.CSS_SELECTOR, 'button')
 
         return tab_buttons
 
     # 중계 페이지 내에서 이닝 버튼 찾기
     def find_inning_button(self):
-        main_section = self.driver.find_element(By.CSS_SELECTOR, 'div[class^="Home_main_section"]')
-        game_panel = main_section.find_element(By.CSS_SELECTOR, 'section[class^="Home_game_panel"]')
-        tab_list = game_panel.find_element(By.CSS_SELECTOR, 'div[class^="SetTab_tab_list"]')
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_main_section"]')
+        game_panel = self.find_element_CSSS(main_section, 'section[class^="Home_game_panel"]')
+        tab_list = self.find_element_CSSS(game_panel, 'div[class^="SetTab_tab_list"]')
         inning_buttons = tab_list.find_elements(By.CSS_SELECTOR, 'button')
 
         inning_buttons[:] = [btn for btn in inning_buttons if btn.is_enabled()]
@@ -101,38 +105,38 @@ class Scrapper:
         
     # 경기/일정 페이지에서 달력 버튼 찾아 반환
     def find_calender_button(self):
-        main_section = self.driver.find_element(By.CSS_SELECTOR, 'div[class^="Home_container"]')
-        date_area = main_section.find_element(By.CSS_SELECTOR, 'div[class^="CalendarDate_schedule_date_area"]')
-        calender = date_area.find_element(By.CSS_SELECTOR, 'div[class^="CalendarDate_calendar_wrap"]')
-        calender_button = calender.find_element(By.CSS_SELECTOR, 'button')
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
+        calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_calendar_wrap"]')
+        calender_button = self.find_element_CSSS(calender, 'button')
 
         return calender_button
     
     # 달력 html 코드 획득
     def get_calender_html(self):
-        main_section = self.driver.find_element(By.CSS_SELECTOR, 'div[class^="Home_container"]')
-        date_area = main_section.find_element(By.CSS_SELECTOR, 'div[class^="CalendarDate_schedule_date_area"]')
-        calender = date_area.find_element(By.CSS_SELECTOR, 'div[class^="CalendarDate_calendar_wrap"]')
-        calender_layer = calender.find_element(By.CSS_SELECTOR, 'div[class^="Calendar_layer_content"]')
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
+        calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_calendar_wrap"]')
+        calender_layer = self.find_element_CSSS(calender, 'div[class^="Calendar_layer_content"]')
 
         return calender_layer
     
     # 달력에서 년도 선택
     def select_year(self, year):
         calender_html = self.get_calender_html()
-        select_year = Select(calender_html.find_element(By.CSS_SELECTOR, 'select[class^="Calendar_select"]'))
+        select_year = Select(self.find_element_CSSS(calender_html, 'select[class^="Calendar_select"]'))
         select_year.select_by_value(str(year))
 
     # 연도의 첫 번째 달로 이동
     def goto_first_month(self):
         calender_html = self.get_calender_html()
         while True:
-            self.click(calender_html.find_element(By.CSS_SELECTOR, 'button[class^="Calendar_button_prev"]'))
+            self.click(self.find_element_CSSS(calender_html, 'button[class^="Calendar_button_prev"]'))
             time.sleep(1)
             calender_html = self.get_calender_html()
-            current_month = calender_html.find_element(By.CSS_SELECTOR, 'div[class^="Calendar_current"]')
+            current_month = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
             if int(current_month.text[:-1]) == 12:
-                self.click(calender_html.find_element(By.CSS_SELECTOR, 'button[class^="Calendar_button_next"]'))
+                self.click(self.find_element_CSSS(calender_html, 'button[class^="Calendar_button_next"]'))
                 break
     
     # 달의 첫번째 일자 버튼 클릭
@@ -144,17 +148,60 @@ class Scrapper:
                 self.click(btn)
                 break
 
+    # 활성화 된 날짜 목록 반환
+    def get_activated_date(self):
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
+        date_tab = self.find_element_CSSS(date_area, 'div[class^=CalendarDate_calendar_tab_wrap]')
+        date_buttons = date_tab.find_elements(By.CSS_SELECTOR, 'button')
+
+        activated_dates = []
+        for btn in date_buttons:
+            if btn.is_enabled():
+                btn_date = self.find_element_CSSS(btn, 'em')
+                activated_dates.append(int(btn_date.get_attribute('innerHTML')))
+
+        return activated_dates
+
+    # 일자 지정하여 일정 주소 반환
+    def get_schedule_page_url(self, year, month, date):
+        base = "https://m.sports.naver.com/kbaseball/schedule/index?date="
+        date = datetime.date(year, month, date).strftime("%Y-%m-%d")
+        
+        return base + date
+    
+    # 특정 일자에서 경기 페이지 주소 얻기
+    def get_game_urls(self, year, month, date):
+        self.driver.get(self.get_schedule_page_url(year,month,date))
+        time.sleep(1)
+
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        match_group = main_section.find_elements(By.CSS_SELECTOR, 'div[class^="ScheduleAllType_match_list_group"]')
+
+        for grp in match_group:
+            a = self.find_element_CSSS(grp, 'div[class^="ScheduleAllType_title_area"]')
+            em = self.find_element_CSSS(a, 'em')
+            if em.text == "KBO리그":
+                target_group = grp
+                break
+            else:
+                target_group = None
+        
+        if target_group is None:
+            return -1
+
+        match_urls = []    
+        matches = target_group.find_elements(By.CSS_SELECTOR, 'li[class^="MatchBox_match_item"]')
+        for match in matches:
+            match_status = self.find_element_CSSS(match, 'em[class^=MatchBox_status]')
+            if match_status.text == "종료":
+                match_urls.append(self.find_element_CSSS(match, 'a[class^="MatchBox_link"]').get_attribute('href'))
+
+        return match_urls
 
 if __name__ == "__main__":
     scrapper = Scrapper()
-    scrapper.driver.get("https://m.sports.naver.com/kbaseball/schedule/index")
-    time.sleep(1)
-    scrapper.click(scrapper.find_calender_button())
-    scrapper.select_year(2023)
-    time.sleep(1)
-    scrapper.goto_first_month()
-    time.sleep(1)
-    scrapper.click_first_date()
+    print(scrapper.get_game_urls(2025, 6, 24))
     
     #with open('lineup.json', 'w') as tgtfile:
     #    json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
