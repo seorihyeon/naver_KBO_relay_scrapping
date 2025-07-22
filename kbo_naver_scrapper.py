@@ -37,8 +37,14 @@ class Scrapper:
         game_panel = self.find_element_CSSS(main_section, 'section[class^="Home_game_panel"]')
         game_tab = self.find_element_CSSS(game_panel, 'ul[class^="GameTab_tab_list"]')
         tab_buttons = game_tab.find_elements(By.CSS_SELECTOR, 'button')
+        
+        tab_button_dict = dict()
+        
+        for btn in tab_buttons:
+            text = self.find_element_CSSS(btn, 'span[class^="GameTab_text"]').text
+            tab_button_dict[text] = btn
 
-        return tab_buttons
+        return tab_button_dict
 
     # 중계 페이지 내에서 이닝 버튼 찾기
     def find_inning_button(self):
@@ -50,6 +56,12 @@ class Scrapper:
         inning_buttons[:] = [btn for btn in inning_buttons if btn.is_enabled()]
 
         return inning_buttons
+    
+    # 이닝 데이터 전처리
+    def preprocess_inning_data(self, inning_data):
+        processed_data = inning_data["result"]["textRelayData"]["textRelays"]
+
+        return processed_data
     
     # HTML request를 통해 이닝 데이터 취득
     def get_inning_data(self, relay_btn):
@@ -63,12 +75,29 @@ class Scrapper:
             time.sleep(1)
             for request in self.driver.requests:
                 if 'inning' in request.querystring:
-                    print(request.querystring[-1])
                     body = request.response.body.decode('utf-8')
-                    inning_data.append(json.loads(body))
+                    break
+
+            inning_data.append(self.preprocess_inning_data(json.loads(body)))
         
         return inning_data
     
+    # 라인업 데이터 전처리
+    def preprocess_lineup_data(self, lineup_data):
+        preview_data = lineup_data["result"]["previewData"]
+        away_lineup = preview_data["awayTeamLineUp"]
+        home_lineup = preview_data["homeTeamLineUp"]
+
+        processed_data = dict(game_info = preview_data["gameInfo"],
+                              home_starter = home_lineup["fullLineUp"],
+                              home_bullpen = home_lineup["pitcherBullpen"],
+                              home_candidate = home_lineup["batterCandidate"],
+                              away_starter = away_lineup["fullLineUp"],
+                              away_bullpen = away_lineup["pitcherBullpen"],
+                              away_candidate = away_lineup["batterCandidate"])
+        
+        return processed_data
+
     # HTML request를 통해 선수 라인업 데이터 취득
     def get_lineup_data(self, lineup_btn):
         del self.driver.requests
@@ -78,11 +107,23 @@ class Scrapper:
             if 'preview' in request.path:
                 body = request.response.body.decode('utf-8')
                 lineup_data = json.loads(body)
+                break
+        
+        lineup_data = self.preprocess_lineup_data(lineup_data)
         
         return lineup_data
     
-    # HTML request를 통해 경기 결과 데이터 취득
-    def get_result_data(self, result_btn):
+    # 경기 기록 데이터 전처리
+    def preprocess_record_data(self, record_data):
+        record = record_data["result"]["recordData"]
+
+        processed_data = dict(pitcher = record["pitchersBoxscore"],
+                              batter = record["battersBoxscore"])
+        
+        return processed_data
+
+    # HTML request를 통해 경기 기록 데이터 취득
+    def get_record_data(self, result_btn):
         del self.driver.requests
         self.click(result_btn)
         time.sleep(1)
@@ -90,6 +131,9 @@ class Scrapper:
             if 'record' in request.path:
                 body = request.response.body.decode('utf-8')
                 record_data = json.loads(body)
+                break
+        
+        record_data = self.preprocess_record_data(record_data)
         
         return record_data
 
@@ -97,11 +141,11 @@ class Scrapper:
     def get_game_data(self, game_url):
         self.driver.get(game_url)
         tab_buttons = self.find_tab_button()
-        lineup_data = self.get_lineup_data(tab_buttons[2])
-        inning_data = self.get_inning_data(tab_buttons[3])
-        result_data = self.get_result_data(tab_buttons[6])
+        lineup_data = self.get_lineup_data(tab_buttons["라인업"])
+        inning_data = self.get_inning_data(tab_buttons["중계"])
+        record_data = self.get_record_data(tab_buttons["기록"])
 
-        return lineup_data, inning_data, result_data
+        return lineup_data, inning_data, record_data
         
     # 경기/일정 페이지에서 달력 버튼 찾아 반환
     def find_calender_button(self):
@@ -199,17 +243,17 @@ class Scrapper:
 
         return match_urls
 
+
 if __name__ == "__main__":
     scrapper = Scrapper()
-    print(scrapper.get_game_urls(2025, 6, 24))
+    urls = scrapper.get_game_urls(2025, 6, 24)
+    ld, ind, rd = scrapper.get_game_data(urls[0])
     
-    #with open('lineup.json', 'w') as tgtfile:
-    #    json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
-    #with open('inning.json', 'w') as tgtfile:
-    #    json.dump(ind, tgtfile, ensure_ascii= False, indent = 4)
-    #with open('record.json', 'w') as tgtfile:
-    #    json.dump(rd, tgtfile, ensure_ascii= False, indent = 4)
-
-    os.system("pause")
+    with open('lineup.json', 'w') as tgtfile:
+        json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
+    with open('inning.json', 'w') as tgtfile:
+        json.dump(ind, tgtfile, ensure_ascii= False, indent = 4)
+    with open('record.json', 'w') as tgtfile:
+        json.dump(rd, tgtfile, ensure_ascii= False, indent = 4)
 
     
