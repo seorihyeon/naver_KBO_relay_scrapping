@@ -8,20 +8,28 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
 from selenium.common.exceptions import JavascriptException
 from selenium.webdriver.support.select import Select
 
 # Selenium을 이용해 스크래핑을 수행하는 클래스
 class Scrapper:
-    def __init__(self, wait = 10, path = './games/'):
+    def __init__(self, wait = 10, path = 'games'):
         chrome_options = webdriver.ChromeOptions()
         chrome_options.add_argument("--no-sandbox") # 샌드박스 기능 비활성화
         #chrome_options.add_argument("--headless") # GUI 기능 비활성화
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36') # User-agent 위조
         self.driver = webdriver.Chrome(options = chrome_options)
         self.driver.implicitly_wait(wait)
-        self.path = path
+
+        try:
+            os.makedirs(path, exist_ok = True)
+        except OSError:
+            print("기록 저장 파일 생성 오류")
+        self.path = './' + path + '/'
+
+        self.driver.get("https://m.sports.naver.com/kbaseball/schedule/index")
 
     # 버튼 클릭
     def click(self, button):
@@ -167,8 +175,13 @@ class Scrapper:
     
     # 달력에서 년도 선택
     def select_year(self, year):
+        if not isinstance(year, int):
+            raise ValueError('연도가 정수가 아닙니다.')
         calender_html = self.get_calender_html()
-        select_year = Select(self.find_element_CSSS(calender_html, 'select[class^="Calendar_select"]'))
+        try:
+            select_year = Select(self.find_element_CSSS(calender_html, 'select[class^="Calendar_select"]'))
+        except NoSuchElementException:
+            raise ValueError('데이터가 제공되는 연도가 아닙니다.')
         select_year.select_by_value(str(year))
 
     # 연도의 첫 번째 달로 이동
@@ -182,6 +195,9 @@ class Scrapper:
             if int(current_month.text[:-1]) == 12:
                 self.click(self.find_element_CSSS(calender_html, 'button[class^="Calendar_button_next"]'))
                 break
+        
+        current_month = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
+        return int(current_month.text[:-1])
     
     # 달의 첫번째 일자 버튼 클릭
     def click_first_date(self):
@@ -193,7 +209,7 @@ class Scrapper:
                 break
 
     # 활성화 된 날짜 목록 반환
-    def get_activated_date(self):
+    def get_activated_dates(self):
         main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
         date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
         date_tab = self.find_element_CSSS(date_area, 'div[class^=CalendarDate_calendar_tab_wrap]')
@@ -242,18 +258,44 @@ class Scrapper:
                 match_urls.append(self.find_element_CSSS(match, 'a[class^="MatchBox_link"]').get_attribute('href'))
 
         return match_urls
+    
+    # 다음 달로 이동
+    def goto_next_moth(self):
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
+        calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_calendar_wrap"]')
+        
+        self.click(self.find_element_CSSS(calender, 'button[class^="CalendarDate_button_next"]'))
+
+    # 특정 시즌 경기 데이터 긁어오기
+    def get_game_data_season(self, year):
+        self.click(self.find_calender_button())
+        self.select_year(year)
+        time.sleep(1)
+        current_month = self.goto_first_month()
+        time.sleep(1)
+        self.click_first_date()
+
+        activated_dates = self.get_activated_dates()
+
+        while current_month < 13:
+            for date in activated_dates:
+                urls = self.get_game_urls(year, current_month, date)
+                if isinstance(urls, list):
+                    for url in urls:
+                        ld, ind, rd = self.get_game_data(url)
+                        game_data = {"lineup": ld, "relay": ind, "record": rd}
+                        with open(self.path + url[0].split('/')[-1] + '.json', 'w') as tgtfile:
+                            json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
+            
+            self.goto_next_month()
+            current_month += 1
+
 
 
 if __name__ == "__main__":
     scrapper = Scrapper()
-    urls = scrapper.get_game_urls(2025, 6, 24)
-    ld, ind, rd = scrapper.get_game_data(urls[0])
-    
-    with open('lineup.json', 'w') as tgtfile:
-        json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
-    with open('inning.json', 'w') as tgtfile:
-        json.dump(ind, tgtfile, ensure_ascii= False, indent = 4)
-    with open('record.json', 'w') as tgtfile:
-        json.dump(rd, tgtfile, ensure_ascii= False, indent = 4)
+
+    scrapper.get_game_data_season(2024)
 
     
