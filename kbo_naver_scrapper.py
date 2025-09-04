@@ -24,9 +24,10 @@ class Scrapper:
         self.driver.implicitly_wait(wait)
 
         try:
-            os.makedirs(path, exist_ok = True)
-        except OSError:
-            print("기록 저장 파일 생성 오류")
+            if not os.path.exists('./' + path):
+                os.makedirs('./' + path)
+        except OSError as e:
+            print(f"Error creating directory: {e}")
         self.path = './' + path + '/'
 
         self.driver.get("https://m.sports.naver.com/kbaseball/schedule/index")
@@ -81,13 +82,22 @@ class Scrapper:
             del self.driver.requests
             self.click(btn)
             time.sleep(1)
+            body = None
             for request in self.driver.requests:
-                if 'inning' in request.querystring:
-                    body = request.response.body.decode('utf-8')
-                    break
-
-            inning_data.append(self.preprocess_inning_data(json.loads(body)))
-        
+                try:
+                    response = request.get_attribute("response")
+                    if response is not None and 'inning' in getattr(request, 'querystring', ''):
+                        body = response.body.decode('utf-8')
+                        break
+                except Exception as e:
+                    continue
+            if body:
+                try:
+                    inning_data.append(self.preprocess_inning_data(json.loads(body)))
+                except Exception as e:
+                    inning_data.append([])
+            else:
+                inning_data.append([])
         return inning_data
     
     # 라인업 데이터 전처리
@@ -111,14 +121,23 @@ class Scrapper:
         del self.driver.requests
         self.click(lineup_btn)
         time.sleep(1)
+        lineup_data = None
         for request in self.driver.requests:
-            if 'preview' in request.path:
-                body = request.response.body.decode('utf-8')
-                lineup_data = json.loads(body)
-                break
-        
-        lineup_data = self.preprocess_lineup_data(lineup_data)
-        
+            try:
+                response = request.get_attribute("response")
+                if response is not None and "preview" in getattr(request, 'path', ''):
+                    body = response.body.decode('utf-8')
+                    lineup_data = json.loads(body)
+                    break
+            except Exception as e:
+                continue
+        if lineup_data:
+            try:
+                lineup_data = self.preprocess_lineup_data(lineup_data)
+            except Exception as e:
+                lineup_data = {}
+        else:
+            lineup_data = {}
         return lineup_data
     
     # 경기 기록 데이터 전처리
@@ -135,14 +154,23 @@ class Scrapper:
         del self.driver.requests
         self.click(result_btn)
         time.sleep(1)
+        record_data = None
         for request in self.driver.requests:
-            if 'record' in request.path:
-                body = request.response.body.decode('utf-8')
-                record_data = json.loads(body)
-                break
-        
-        record_data = self.preprocess_record_data(record_data)
-        
+            try:
+                response = request.get_attribute("response")
+                if response is not None and "record" in getattr(request, 'path', ''):
+                    body = response.body.decode('utf-8')
+                    record_data = json.loads(body)
+                    break
+            except Exception as e:
+                continue
+        if record_data:
+            try:
+                record_data = self.preprocess_record_data(record_data)
+            except Exception as e:
+                record_data = {}
+        else:
+            record_data = {}
         return record_data
 
     # 경기 중계 url을 받아 필요한 데이터를 긁어서 반환
@@ -260,7 +288,7 @@ class Scrapper:
         return match_urls
     
     # 다음 달로 이동
-    def goto_next_moth(self):
+    def goto_next_month(self):
         main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
         date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
         calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_calendar_wrap"]')
@@ -276,17 +304,17 @@ class Scrapper:
         time.sleep(1)
         self.click_first_date()
 
-        activated_dates = self.get_activated_dates()
-
         while current_month < 13:
+            activated_dates = self.get_activated_dates()
             for date in activated_dates:
                 urls = self.get_game_urls(year, current_month, date)
                 if isinstance(urls, list):
                     for url in urls:
                         ld, ind, rd = self.get_game_data(url)
                         game_data = {"lineup": ld, "relay": ind, "record": rd}
-                        with open(self.path + url[0].split('/')[-1] + '.json', 'w') as tgtfile:
-                            json.dump(ld, tgtfile, ensure_ascii= False, indent = 4)
+                        filename = url[0].split('/')[-1] + '.json'
+                        with open(self.path + filename, 'w', encoding = 'utf-8') as tgtfile:
+                            json.dump(game_data, tgtfile, ensure_ascii= False, indent = 4)
             
             self.goto_next_month()
             current_month += 1
@@ -296,6 +324,12 @@ class Scrapper:
 if __name__ == "__main__":
     scrapper = Scrapper()
 
-    scrapper.get_game_data_season(2024)
+    try:
+        scrapper.get_game_data_season(2024)
+    finally:
+        try:
+            scrapper.driver.quit()
+        except Exception:
+            pass
 
     
