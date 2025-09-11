@@ -22,6 +22,7 @@ class Scrapper:
         chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36') # User-agent 위조
         self.driver = webdriver.Chrome(options = chrome_options)
         self.driver.implicitly_wait(wait)
+        self.DEFAULT_TIMEOUT = wait;
 
         try:
             if not os.path.exists('./' + path):
@@ -34,11 +35,37 @@ class Scrapper:
 
     # 버튼 클릭
     def click(self, button):
+        WebDriverWait(self.driver, getattr(self, 'DEFAULT_TIMEOUT', 10)).until(EC.element_to_be_clickable(button))
         ActionChains(self.driver).move_to_element(button).click(button).perform()
 
     # CSS_SELECTOR로 요소 찾기
     def find_element_CSSS(self, parent, query):
         return parent.find_element(By.CSS_SELECTOR, query)
+    
+    # 대기용 함수
+    def wait_present(self, css, timeout = None):
+        t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
+        return WebDriverWait(self.driver, t).until(EC.presence_of_element_located((By.CSS_SELECTOR, css)))
+    
+    def wait_all_present(self, css, timeout = None):
+        t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
+        return WebDriverWait(self.driver, t).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, css)))
+    
+    def wait_clickable_css(self, css, timeout = None):
+        t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
+        return WebDriverWait(self.driver, t).until(EC.element_to_be_clickable((By.CSS_SELECTOR, css)))
+    
+    def wait_for_request(self, keyword, key_attr, timeout = None):
+        t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
+        def _predicate(_):
+            for req in reversed(self.driver.requests):
+                try:
+                    if getattr(req, "response", None) and (keyword in getattr(req, key_attr, "")):
+                        return req
+                except Exception:
+                    continue
+            return False
+        return WebDriverWait(self.driver,t).until(_predicate)
     
     # 경기 페이지 내에서 탭 이동 버튼 찾기
     def find_tab_button(self):
@@ -75,29 +102,15 @@ class Scrapper:
     # HTML request를 통해 이닝 데이터 취득
     def get_inning_data(self, relay_btn):
         self.click(relay_btn)
-        time.sleep(1)
+        self.wait_all_present('section[class^="Home_game_panel"] div[class^="SetTab_tab_list"] button')
         inning_buttons = self.find_inning_button()
         inning_data = []
         for btn in inning_buttons:
             del self.driver.requests
             self.click(btn)
-            time.sleep(1)
-            body = None
-            for request in self.driver.requests:
-                try:
-                    response = request.get_attribute("response")
-                    if response is not None and 'inning' in getattr(request, 'querystring', ''):
-                        body = response.body.decode('utf-8')
-                        break
-                except Exception as e:
-                    continue
-            if body:
-                try:
-                    inning_data.append(self.preprocess_inning_data(json.loads(body)))
-                except Exception as e:
-                    inning_data.append([])
-            else:
-                inning_data.append([])
+            req = self.wait_for_request('inning', 'querystring')
+            body = req.response.body.decode('utf-8', 'ignore')
+            inning_data.append(self.preprocess_inning_data(json.loads(body)) if body else [])
         return inning_data
     
     # 라인업 데이터 전처리
@@ -120,24 +133,10 @@ class Scrapper:
     def get_lineup_data(self, lineup_btn):
         del self.driver.requests
         self.click(lineup_btn)
-        time.sleep(1)
-        lineup_data = None
-        for request in self.driver.requests:
-            try:
-                response = request.get_attribute("response")
-                if response is not None and "preview" in getattr(request, 'path', ''):
-                    body = response.body.decode('utf-8')
-                    lineup_data = json.loads(body)
-                    break
-            except Exception as e:
-                continue
-        if lineup_data:
-            try:
-                lineup_data = self.preprocess_lineup_data(lineup_data)
-            except Exception as e:
-                lineup_data = {}
-        else:
-            lineup_data = {}
+        req = self.wait_for_request('preview', 'path')
+        body = req.response.body.decode('utf-8', 'ignore')
+        lineup_data = self.preprocess_lineup_data(json.loads(body)) if body else {}
+        
         return lineup_data
     
     # 경기 기록 데이터 전처리
@@ -153,24 +152,10 @@ class Scrapper:
     def get_record_data(self, result_btn):
         del self.driver.requests
         self.click(result_btn)
-        time.sleep(1)
-        record_data = None
-        for request in self.driver.requests:
-            try:
-                response = request.get_attribute("response")
-                if response is not None and "record" in getattr(request, 'path', ''):
-                    body = response.body.decode('utf-8')
-                    record_data = json.loads(body)
-                    break
-            except Exception as e:
-                continue
-        if record_data:
-            try:
-                record_data = self.preprocess_record_data(record_data)
-            except Exception as e:
-                record_data = {}
-        else:
-            record_data = {}
+        req = self.wait_for_request('record', 'path')
+        body = req.response.body.decode('utf-8', 'ignore')
+        record_data = self.preprocess_record_data(json.loads(body)) if body else {}
+        
         return record_data
 
     # 경기 중계 url을 받아 필요한 데이터를 긁어서 반환
@@ -216,16 +201,24 @@ class Scrapper:
     def goto_first_month(self):
         calender_html = self.get_calender_html()
         while True:
+            current_month_element = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
+            prev_text = current_month_element.text
             self.click(self.find_element_CSSS(calender_html, 'button[class^="Calendar_button_prev"]'))
-            time.sleep(1)
+            WebDriverWait(self.driver, getattr(self, 'DEFAULT_TIMEOUT', 10)).until(
+                lambda d: self.find_element_CSSS(self.get_calender_html(), 'div[class^="Calendar_current"]').text != prev_text
+            )
             calender_html = self.get_calender_html()
-            current_month = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
-            if int(current_month.text[:-1]) == 12:
+            current_month_element = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
+            if int(current_month_element.text[:-1]) == 12:
+                prev_text = current_month_element.text
                 self.click(self.find_element_CSSS(calender_html, 'button[class^="Calendar_button_next"]'))
                 break
         
-        current_month = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
-        return int(current_month.text[:-1])
+        WebDriverWait(self.driver, getattr(self, 'DEFAULT_TIMEOUT', 10)).until(
+                lambda d: self.find_element_CSSS(self.get_calender_html(), 'div[class^="Calendar_current"]').text != prev_text
+            )
+        current_month_element = self.find_element_CSSS(calender_html, 'div[class^="Calendar_current"]')
+        return int(current_month_element.text[:-1])
     
     # 달의 첫번째 일자 버튼 클릭
     def click_first_date(self):
@@ -238,16 +231,17 @@ class Scrapper:
 
     # 활성화 된 날짜 목록 반환
     def get_activated_dates(self):
+        self.wait_present('div[class^="CalendarDate_calendar_tab_wrap"]')
+
         main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
         date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
         date_tab = self.find_element_CSSS(date_area, 'div[class^=CalendarDate_calendar_tab_wrap]')
-        date_buttons = date_tab.find_elements(By.CSS_SELECTOR, 'button')
+        date_buttons = date_tab.find_elements(By.CSS_SELECTOR, 'button:not([disabled])')
 
         activated_dates = []
         for btn in date_buttons:
-            if btn.is_enabled():
-                btn_date = self.find_element_CSSS(btn, 'em')
-                activated_dates.append(int(btn_date.get_attribute('innerHTML')))
+            btn_date = self.find_element_CSSS(btn, 'em')
+            activated_dates.append(int(btn_date.get_attribute('innerHTML')))
 
         return activated_dates
 
@@ -261,7 +255,7 @@ class Scrapper:
     # 특정 일자에서 경기 페이지 주소 얻기
     def get_game_urls(self, year, month, date):
         self.driver.get(self.get_schedule_page_url(year,month,date))
-        time.sleep(1)
+        self.wait_all_present('div[class^="ScheduleAllType_match_list_group"]')
 
         main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
         match_group = main_section.find_elements(By.CSS_SELECTOR, 'div[class^="ScheduleAllType_match_list_group"]')
@@ -289,19 +283,30 @@ class Scrapper:
     
     # 다음 달로 이동
     def goto_next_month(self):
+        self.wait_present('button[class^="CalendarDate_button_next"]')
         main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
         date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
-        calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_calendar_wrap"]')
-        
-        self.click(self.find_element_CSSS(calender, 'button[class^="CalendarDate_button_next"]'))
+        calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_current_date_wrap"]')
+        next_button = self.find_element_CSSS(calender, 'button[class^="CalendarDate_button_next"]')
+
+        self.click(next_button)
+
+    def get_current_month(self):
+        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
+        calender = self.find_element_CSSS(date_area, 'div[class^="CalendarDate_current_date_wrap"]')
+        current = self.find_element_CSSS(calender, 'time[class^="CalendarDate_current_date"]')
+
+        month = current.get_attribute('datetime').split('-')[1]
+        return int(month)
 
     # 특정 시즌 경기 데이터 긁어오기
     def get_game_data_season(self, year):
         self.click(self.find_calender_button())
         self.select_year(year)
-        time.sleep(1)
+        self.wait_all_present('button[class^="Calendar_button_date"]')
         current_month = self.goto_first_month()
-        time.sleep(1)
+        self.wait_all_present('button[class^="Calendar_button_date"]')
         self.click_first_date()
 
         while current_month < 13:
@@ -318,6 +323,10 @@ class Scrapper:
             
             self.goto_next_month()
             current_month += 1
+            if self.get_current_month() != current_month:
+                # 강제 이동
+                self.driver.get(self.get_schedule_page_url(year,current_month,1))
+
 
 
 
