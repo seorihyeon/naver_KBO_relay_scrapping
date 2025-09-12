@@ -233,15 +233,14 @@ class Scrapper:
     def get_activated_dates(self):
         self.wait_present('div[class^="CalendarDate_calendar_tab_wrap"]')
 
-        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
-        date_area = self.find_element_CSSS(main_section, 'div[class^="CalendarDate_schedule_date_area"]')
-        date_tab = self.find_element_CSSS(date_area, 'div[class^=CalendarDate_calendar_tab_wrap]')
-        date_buttons = date_tab.find_elements(By.CSS_SELECTOR, 'button:not([disabled])')
+        css_tree = 'div[class^="Home_container"] div[class^="CalendarDate_schedule_date_area"] div[class^="CalendarDate_calendar_tab_wrap"]'
+        date_tab = self.find_element_CSSS(date_area, css_tree)
+        date_buttons_em = date_tab.find_elements(By.CSS_SELECTOR, 'button:not([disabled]) em')
 
         activated_dates = []
-        for btn in date_buttons:
-            btn_date = self.find_element_CSSS(btn, 'em')
-            activated_dates.append(int(btn_date.get_attribute('innerHTML')))
+        for em in date_buttons_em:
+            txt = em.get_attribute('innerHTML')
+            activated_dates.append(int(txt))
 
         return activated_dates
 
