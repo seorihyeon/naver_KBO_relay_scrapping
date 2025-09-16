@@ -5,24 +5,30 @@ import os
 import re
 from seleniumwire import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException
 from selenium.common.exceptions import TimeoutException
 from selenium.common.exceptions import JavascriptException
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.support.select import Select
 
 # Selenium을 이용해 스크래핑을 수행하는 클래스
 class Scrapper:
     def __init__(self, wait = 10, path = 'games'):
-        chrome_options = webdriver.ChromeOptions()
-        chrome_options.add_argument("--no-sandbox") # 샌드박스 기능 비활성화
-        #chrome_options.add_argument("--headless") # GUI 기능 비활성화
-        chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36') # User-agent 위조
-        self.driver = webdriver.Chrome(options = chrome_options)
+        edge_options = EdgeOptions()
+        edge_options.add_argument("--no-sandbox")
+        #edge_options.add_arguemnt("--headless=new")
+        edge_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                                  'AppleWebKit/537.36 (KHTML, like Gecko) '
+                                  'Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0')
+        sw_options = {'exclude_hosts': ['mtalk.google.com', 'fcm.googleapis.com', 'clients.google.com', 'clients2.google.com']}
+        self.driver = webdriver.Edge(options=edge_options, seleniumwire_options=sw_options)
+
         self.driver.implicitly_wait(wait)
-        self.DEFAULT_TIMEOUT = wait;
+        self.DEFAULT_TIMEOUT = wait
 
         try:
             if not os.path.exists('./' + path):
@@ -43,10 +49,47 @@ class Scrapper:
         return parent.find_element(By.CSS_SELECTOR, query)
     
     # 대기용 함수
-    def wait_present(self, css, timeout = None):
+    def wait_present(self, css, timeout = None, root = None, min_count = 1, visible = False, fresh = True):
+        """
+        css: 찾을 CSS 셀렉터(하나)
+        root: 검색 범위 (None=driver, WebElement, 또는 CSS 문자열)
+        min_count: 최소 몇 개 이상 나타나야 통과할지
+        visible: 보이는 요소만 인정할지
+        fresh: 통과 직후 한 번 더 재조회해서 최신 핸들을 반환할지
+        반환: 요소 1개(min_count==1) 또는 요소 리스트
+        """
         t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
-        return WebDriverWait(self.driver, t).until(EC.presence_of_element_located((By.CSS_SELECTOR, css)))
-    
+
+        def _get_container():
+            if root is None:
+                return self.driver
+            if isinstance(root, str):
+                return self.driver.find_element(By.CSS_SELECTOR, root)
+            return root # WebElement
+        
+        def _probe(_):
+            try:
+                container = _get_container()
+                elems = container.find_elements(By.CSS_SELECTOR, css)
+                if visible:
+                    elems = [e for e in elems if e.is_displayed()]
+                return elems if len(elems) >= min_count else False
+            except StaleElementReferenceException:
+                return False
+            
+        elems = WebDriverWait(self.driver, t).until(_probe)
+
+        if fresh:
+            try:
+                container = _get_container()
+                elems = container.find_elements(By.CSS_SELECTOR, css)
+                if visible:
+                    elems = [e for e in elems if e.is_displayed()]
+            except Exception:
+                pass
+        
+        return elems[0] if min_count == 1 else elems
+
     def wait_all_present(self, css, timeout = None):
         t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
         return WebDriverWait(self.driver, t).until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, css)))
@@ -55,7 +98,7 @@ class Scrapper:
         t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
         return WebDriverWait(self.driver, t).until(EC.element_to_be_clickable((By.CSS_SELECTOR, css)))
     
-    def wait_for_request(self, keyword, key_attr, timeout = None):
+    def wait_for_request(self, keyword, key_attr, timeout = None, retries = 3, refresh = True, clear_before = True, ready_css = None):
         t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
         def _predicate(_):
             for req in reversed(self.driver.requests):
@@ -65,22 +108,57 @@ class Scrapper:
                 except Exception:
                     continue
             return False
-        return WebDriverWait(self.driver,t).until(_predicate)
-    
-    # 경기 페이지 내에서 탭 이동 버튼 찾기
-    def find_tab_button(self):
-        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_main_section"]')
-        game_panel = self.find_element_CSSS(main_section, 'section[class^="Home_game_panel"]')
-        game_tab = self.find_element_CSSS(game_panel, 'ul[class^="GameTab_tab_list"]')
-        tab_buttons = game_tab.find_elements(By.CSS_SELECTOR, 'button')
         
-        tab_button_dict = dict()
-        
-        for btn in tab_buttons:
-            text = self.find_element_CSSS(btn, 'span[class^="GameTab_text"]').text
-            tab_button_dict[text] = btn
+        attempt = 0
+        while True:
+            try:
+                return WebDriverWait(self.driver,t).until(_predicate)
+            except TimeoutException:
+                if attempt >= retries:
+                    raise
+                attempt += 1
 
-        return tab_button_dict
+                if clear_before:
+                    try:
+                        del self.driver.requests
+                    except Exception:
+                        pass
+
+                if refresh:
+                    try:
+                        self.driver.refresh()
+                    except Exception:
+                        pass
+
+                if ready_css:
+                    try:
+                        self.wait_present(ready_css)
+                    except Exception:
+                        pass
+                
+    # 경기 페이지 내에서 탭 이동 버튼 찾기
+    def find_tab_button(self, timeout = None, retry = 3):
+        t = timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)
+
+        tab_css = 'ul[class^="GameTab_tab_list"]'
+        self.wait_present(tab_css, visible=True)
+        
+        for _ in range(retry):
+            try:
+                tab_list = self.find_element_CSSS(self.driver, tab_css)
+                tab_buttons = tab_list.find_elements(By.CSS_SELECTOR, 'button')
+        
+                tab_button_dict = dict()
+                
+                for btn in tab_buttons:
+                    text = self.find_element_CSSS(btn, 'span[class^="GameTab_text"]').text
+                    tab_button_dict[text] = btn
+                
+                if tab_button_dict:
+                    return tab_button_dict
+            except StaleElementReferenceException:
+                raise
+        return {}
 
     # 중계 페이지 내에서 이닝 버튼 찾기
     def find_inning_button(self):
@@ -317,7 +395,7 @@ class Scrapper:
                     for url in urls:
                         ld, ind, rd = self.get_game_data(url)
                         game_data = {"lineup": ld, "relay": ind, "record": rd}
-                        filename = url[0].split('/')[-1] + '.json'
+                        filename = url.split('/')[-1] + '.json'
                         with open(self.path + filename, 'w', encoding = 'utf-8') as tgtfile:
                             json.dump(game_data, tgtfile, ensure_ascii= False, indent = 4)
             
