@@ -331,10 +331,18 @@ class Scrapper:
         return base + date
     
     # 특정 일자에서 경기 페이지 주소 얻기
-    def get_game_urls(self, year, month, date):
+    def get_game_urls(self, year, month, date, soft_timeout = 8):
+        """
+        해당 (year, month, day)의 경기 URL 리스트를 반환.
+        - 경기 목록이 뜨면 즉시 URL 반환
+        - 로딩이 계속되면 [] 반환
+        """
         self.driver.get(self.get_schedule_page_url(year,month,date))
-        self.wait_all_present('div[class^="ScheduleAllType_match_list_group"]')
-
+        try:
+            self.wait_all_present('div[class^="ScheduleAllType_match_list_group"]')
+        except TimeoutException:
+            # 경기 없음 or 무한 로딩 -> 건너뜀
+            return []
         main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
         match_group = main_section.find_elements(By.CSS_SELECTOR, 'div[class^="ScheduleAllType_match_list_group"]')
 
@@ -422,7 +430,46 @@ class Scrapper:
                 # 강제 이동
                 self.driver.get(self.get_schedule_page_url(year,current_month,1))
 
-
+    def get_game_data_range(self, start_date, end_date, retry = 3):
+        """
+        start_date, end_date: datetime.date 객체 또는 'YYYY-MM-DD'문자열
+        """
+        if isinstance(start_date, str):
+            start_date = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        if isinstance(end_date, str):
+            end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+        if end_date < start_date:
+            raise ValueError("종료일이 시작일보다 앞설 수 없습니다.")
+        
+        cur = start_date
+        while cur <= end_date:
+            year, month, day = cur.year, cur.month, cur.day
+            # 해당 날짜의 경기 페이지에서 완료된 경기 링크 수집
+            urls = self.get_game_urls(year, month, day)
+            if not urls:
+                cur += datetime.timedelta(days=1)
+                continue
+            if isinstance(urls, list):
+                for url in urls:
+                    # 네트워크 타임아웃/오류 대비 재시도
+                    ld = {}
+                    for _ in range(retry):
+                        try:
+                            ld, ind, rd = self.get_game_data(url)
+                        except TimeoutException:
+                            pass
+                        if ld:
+                            break
+                    if not ld:
+                        # 끝까지 실패하면 스킵
+                        continue
+                    
+                    game_data = {"lineup": ld, "relay": ind, "record": rd}
+                    filename = url.split('/')[-1] + '.json'
+                    with open(self.path + filename, 'w', encoding = 'utf-8') as tgtfile:
+                        json.dump(game_data, tgtfile, ensure_ascii=False, indent = 4)
+            
+            cur += datetime.timedelta(days=1)
 
 if __name__ == "__main__":
     scrapper = Scrapper()
