@@ -20,7 +20,7 @@ class Scrapper:
     def __init__(self, wait = 10, path = 'games'):
         edge_options = EdgeOptions()
         edge_options.add_argument("--no-sandbox")
-        #edge_options.add_arguemnt("--headless=new")
+        edge_options.add_argument("--headless=new")
         edge_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                                   'AppleWebKit/537.36 (KHTML, like Gecko) '
                                   'Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0')

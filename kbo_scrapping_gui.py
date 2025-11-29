@@ -1,6 +1,6 @@
 import os, json, threading, datetime, queue, traceback, calendar
 import dearpygui.dearpygui as dpg
-from seleniumwire.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException
 from kbo_naver_scrapper import Scrapper
 
 class kbo_naver_scrapper_gui:
@@ -29,7 +29,7 @@ class kbo_naver_scrapper_gui:
                     tag, val = m
                     if tag == "progress":
                         dpg.configure_item("progress_bar", default_value = float(val))
-                    elif tag = "done":
+                    elif tag == "done":
                         for item in self.disable_items:
                             dpg.configure_item(item, enabled = True)
                         dpg.configure_item("btn_stop", enabled = False)
@@ -44,7 +44,11 @@ class kbo_naver_scrapper_gui:
             pass
 
     # 달력 기능
-    def pick_day(self, day):
+    def pick_day(self, sender, app_data, user_data):
+        day = user_data
+        if day is None:
+            return
+        
         y, m = self.cal_year, self.cal_month
         dpg.set_value(self.cal_target_input, f"{y:04d}-{m:02d}-{day:02d}")
         dpg.configure_item("calendar_modal", show = False)
@@ -53,11 +57,11 @@ class kbo_naver_scrapper_gui:
         y, m = self.cal_year, self.cal_month
 
         dpg.set_value("calendar_header", f"{y}년 {m:02d}")
-        dpg.delete_item("claendar_grid", children_only = True)
+        dpg.delete_item("calendar_grid", children_only = True)
 
-        weekdays = ["일", "월", "화", "수", "목", "금", "토"]
-        for wd in weekdays:
-            dpg.add_text(wd, parent = "claendar_grid")
+        with dpg.group(horizontal = True, parent = "calendar_grid"):
+            for wd in ["월", "화", "수", "목", "금", "토", "일"]:
+                dpg.add_button(label = wd, width = 34, height = 20, enabled = False)
         
         cal = calendar.Calendar(firstweekday = 0)
         weeks = cal.monthdayscalendar(y, m)
@@ -66,17 +70,20 @@ class kbo_naver_scrapper_gui:
         same_month = (y == today.year and m == today.month)
 
         for week in weeks:
-            with dpg.group(horizontal = True, parent = "claendar_grid"):
+            with dpg.group(horizontal = True, parent = "calendar_grid"):
                 for day in week:
                     if day == 0:
-                        dpg.add_button(label = " ", width = 40, enabled = False)
+                        dpg.add_button(label = " ", width = 34, height = 26, enabled = False)
                     else:
                         label = f"{day:2d}"
                         if same_month and day == today.day:
                             label = f"[{day:2d}]"
                         
-                        dpg.add_button(label = label, width = 34, height = 26,
-                                       callback = lambda _,__,d = day: self.pick_day(d))
+                        is_future = datetime.date(y, m, day) > today
+                        enabled = not is_future
+
+                        dpg.add_button(label = label, width = 34, height = 26, enabled=enabled,
+                                       callback = self.pick_day, user_data = day)
 
     def open_calendar(self, target_input):
         self.cal_target_input = target_input
@@ -100,10 +107,17 @@ class kbo_naver_scrapper_gui:
         self.render_calendar()
 
     def calendar_next(self):
-        self.cal_month += 1
-        if self.cal_month == 13:
-            self.cal_month = 1
-            self.cal_year += 1
+        y, m = self.cal_year, self.cal_month
+        m += 1
+        if m == 13:
+            y, m = y + 1, 1
+        
+        # 현재 이후 달로 이동 막기
+        first_of_next = datetime.date(y, m, 1)
+        if first_of_next > datetime.date.today():
+            return
+        
+        self.cal_year, self.cal_month = y, m
         self.render_calendar()
 
     # 스크래핑 작업
@@ -125,7 +139,7 @@ class kbo_naver_scrapper_gui:
                 self.msg_q.put(("progress", done_days / total_days))
                 cur += datetime.timedelta(days = 1)
 
-            while cur <= end_date and dnot self.stop_flag.is_set():
+            while cur <= end_date and not self.stop_flag.is_set():
                 self.log(f"{cur} 경기 정보 수집 시작...")
 
                 urls = scr.get_game_urls(cur.year, cur.month, cur.day)
@@ -162,7 +176,7 @@ class kbo_naver_scrapper_gui:
 
                 day_complete()
 
-            if self.stop_flag_is_set():
+            if self.stop_flag.is_set():
                 self.log("[중지] 작업이 중지되었습니다.")
             else:
                 self.log("[완료] 모든 작업이 완료되었습니다.")
@@ -225,7 +239,10 @@ class kbo_naver_scrapper_gui:
         dpg.create_viewport(title = "KBO Naver Scrapper", width = 900, height = 600)
 
         with dpg.font_registry():
-            default_font = dpg.add_font(None, 16)
+            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
+                dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
+                dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
+            
 
         with dpg.window(tag="main", label = "KBO Naver Scrapper", width = 900, height = 600):
             dpg.bind_font(default_font)
@@ -236,7 +253,7 @@ class kbo_naver_scrapper_gui:
                 dpg.add_text("시작일")
                 dpg.add_input_text(tag = "start_date", width = 120,
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
-                dpg.add_button(label = "📅", width = 30,
+                dpg.add_button(label = "V", width = 30,
                                tag = "btn_cal_start", callback = lambda: self.open_calendar("start_date"))
                 
                 dpg.add_spacer(width = 10)
@@ -244,12 +261,12 @@ class kbo_naver_scrapper_gui:
                 dpg.add_text("종료일")
                 dpg.add_input_text(tag = "end_date", width = 120,
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
-                dpg.add_button(label = "📅", width = 30,
+                dpg.add_button(label = "V", width = 30,
                                tag = "btn_cal_end", callback = lambda: self.open_calendar("end_date"))
             
-            with dpg.group(horizontal = Ture, parent = "main"):
+            with dpg.group(horizontal = True, parent = "main"):
                 dpg.add_text("저장 경로")
-                dpg.add_input_text(tag = "save_dir", width = 460, default_value = games)
+                dpg.add_input_text(tag = "save_dir", width = 460, default_value = 'games')
 
             with dpg.group(horizontal=True):
                 dpg.add_text("타임아웃(초)")
@@ -277,14 +294,14 @@ class kbo_naver_scrapper_gui:
                         no_move = False, no_resize = True,
                         width = 360, height = 340):
             with dpg.group(horizontal = True):
-                dpg.add_button(label = "<", width = 30, callback = labmda s,a: self.calendar_prev())
+                dpg.add_button(label = "<", width = 30, callback = lambda s,a: self.calendar_prev())
                 dpg.add_spacer(width = 6)
                 dpg.add_text("", tag = "calendar_header")
                 dpg.add_spacer(width = 6)
-                dpg.add_button(label = ">", width = 30, callback = labmda s,a: self.calendar_next())
+                dpg.add_button(label = ">", width = 30, callback = lambda s,a: self.calendar_next())
                 
             dpg.add_separator()
-            with dpg.child_window(tag = "claendar_grid", autosize_x = True, autosize_y = True):
+            with dpg.child_window(tag = "calendar_grid", autosize_x = True, autosize_y = True):
                 pass
 
             dpg.add_separator()
@@ -293,14 +310,14 @@ class kbo_naver_scrapper_gui:
         # 초기 렌더
         self.render_calendar()
 
-        # 메시지 루프
-        dpg.set_render_callback(lambda s,a: self.message_pump())
-
         # UI 실행
         dpg.setup_dearpygui()
         dpg.show_viewport()
         dpg.set_primary_window("main", True)
-        dpg.start_dearpygui()
+        # 렌더 루프
+        while dpg.is_dearpygui_running():
+            dpg.render_dearpygui_frame()
+            self.message_pump()
 
         dpg.destroy_context()
 
@@ -308,5 +325,6 @@ class kbo_naver_scrapper_gui:
         self.build_ui()
 
 if __name__ == "__main__":
+    print(os.path.exists("fonts/NanumGothic.ttf"))
     gui = kbo_naver_scrapper_gui()
     gui.run()
