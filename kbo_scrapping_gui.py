@@ -15,6 +15,13 @@ class kbo_naver_scrapper_gui:
         self.cal_year = today.year
         self.cal_month = today.month
         self.cal_target_input = None
+
+        # 모드 상태
+        self.modes = {
+            "기간": "period",
+            "특정 날짜": "single",
+            "시즌": "season"
+        }
     
     # 로그/메시지 업데이트
     def log(self, msg):
@@ -116,43 +123,62 @@ class kbo_naver_scrapper_gui:
         first_of_next = datetime.date(y, m, 1)
         if first_of_next > datetime.date.today():
             return
-        
+
         self.cal_year, self.cal_month = y, m
         self.render_calendar()
 
+    def set_today(self, target_input):
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        dpg.set_value(target_input, today)
+
     # 스크래핑 작업
-    def run_scraper(self, start_date, end_date, save_dir, timeout, retry):
+    def run_scraper(self, mode, start_date, end_date, save_dir, timeout, retry, season_year=None):
         self.stop_flag.clear()
         scr = None
-        
+
         try:
             scr = Scrapper(wait = timeout, path = save_dir)
-            self.log(f"[시작] KBO Naver Scrapper 작업 시작: {start_date} ~ {end_date} (timeout={timeout}, retry={retry})")
+            if mode == "season" and season_year is not None:
+                self.log(f"[시작] 시즌 전체 수집: {season_year} (timeout={timeout}, retry={retry})")
+            else:
+                self.log(f"[시작] KBO Naver Scrapper 작업 시작: {start_date} ~ {end_date} (timeout={timeout}, retry={retry})")
 
-            cur = start_date
-            total_days = (end_date - start_date).days + 1
+            active_entries = list(scr.iter_active_date_urls(start_date, end_date))
+            total_days = len(active_entries)
+
+            if total_days == 0:
+                self.log("활성화된 일정이 없습니다.")
+                self.msg_q.put(("progress", 1.0))
+                return
+
             done_days = 0
 
             def day_complete():
-                nonlocal done_days, cur
+                nonlocal done_days
                 done_days += 1
                 self.msg_q.put(("progress", done_days / total_days))
-                cur += datetime.timedelta(days = 1)
 
-            while cur <= end_date and not self.stop_flag.is_set():
-                self.log(f"{cur} 경기 정보 수집 시작...")
+            for cur, urls in active_entries:
+                if self.stop_flag.is_set():
+                    break
 
-                urls = scr.get_game_urls(cur.year, cur.month, cur.day)
+                prefix = "[시즌] " if mode == "season" else ""
+                self.log(f"{prefix}{cur} 경기 정보 수집 시작...")
+
+                if urls == -1:
+                    self.log(f"{prefix}{cur} KBO 일정이 없습니다.")
+                    day_complete()
+                    continue
 
                 if not urls:
-                    self.log(f"{cur} 경기 없음/로딩 실패.")
+                    self.log(f"{prefix}{cur} 경기 없음/로딩 실패.")
                     day_complete()
                     continue
 
                 for url in urls:
                     if self.stop_flag.is_set():
                         break
-                    
+
                     ld = {}
                     for _ in range(int(retry)):
                         try:
@@ -160,7 +186,7 @@ class kbo_naver_scrapper_gui:
                             break
                         except Exception as ex:
                             self.log(f" 재시도 필요: {ex}")
-                    
+
                     if not ld:
                         self.log(f"  경기 데이터 수집 실패: {url}")
                         continue
@@ -180,7 +206,7 @@ class kbo_naver_scrapper_gui:
                 self.log("[중지] 작업이 중지되었습니다.")
             else:
                 self.log("[완료] 모든 작업이 완료되었습니다.")
-                self.msg_q.put(("progress", 1,0))
+                self.msg_q.put(("progress", 1.0))
 
         except Exception as e:
             self.log("[오류]\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
@@ -196,6 +222,22 @@ class kbo_naver_scrapper_gui:
             self.msg_q.put(("done", None))
 
     # UI 이벤트
+    def update_mode_fields(self):
+        mode_key = dpg.get_value("mode")
+        mode = self.modes.get(mode_key, "period")
+
+        show_map = {
+            "period": ["group_period"],
+            "single": ["group_single"],
+            "season": ["group_season"],
+        }
+
+        for group in ["group_period", "group_single", "group_season"]:
+            dpg.configure_item(group, show = False)
+
+        for group in show_map.get(mode, []):
+            dpg.configure_item(group, show = True)
+
     def start_scrape(self):
         if self.worker and self.worker.is_alive():
             self.log("이미 작업이 진행 중입니다.")
@@ -205,15 +247,33 @@ class kbo_naver_scrapper_gui:
         timeout = dpg.get_value("timeout")
         retry = dpg.get_value("retry")
 
+        mode_key = dpg.get_value("mode")
+        mode = self.modes.get(mode_key, "period")
+        season_year = None
+
         try:
-            sd = datetime.datetime.strptime(dpg.get_value("start_date"), "%Y-%m-%d").date()
-            ed = datetime.datetime.strptime(dpg.get_value("end_date"), "%Y-%m-%d").date()
+            if mode == "period":
+                sd = datetime.datetime.strptime(dpg.get_value("start_date"), "%Y-%m-%d").date()
+                ed = datetime.datetime.strptime(dpg.get_value("end_date"), "%Y-%m-%d").date()
+                if ed < sd:
+                    self.log("종료일은 시작일보다 이전일 수 없습니다.")
+                    return
+            elif mode == "single":
+                target = datetime.datetime.strptime(dpg.get_value("single_date"), "%Y-%m-%d").date()
+                sd = ed = target
+            elif mode == "season":
+                year = int(dpg.get_value("season_year"))
+                if year < 2020:
+                    self.log("시즌은 2020년부터 선택 가능합니다.")
+                    return
+                sd = datetime.date(year, 1, 1)
+                ed = datetime.date(year, 12, 31)
+                season_year = year
+            else:
+                self.log("알 수 없는 수집 모드입니다.")
+                return
         except ValueError:
             self.log("날짜 형식이 올바르지 않습니다.")
-            return
-        
-        if ed < sd:
-            self.log("종료일은 시작일보다 이전일 수 없습니다.")
             return
 
         os.makedirs(save_dir, exist_ok = True)
@@ -226,7 +286,7 @@ class kbo_naver_scrapper_gui:
 
         self.stop_flag.clear()
         self.worker = threading.Thread(target = self.run_scraper,
-                                       args = (sd, ed, save_dir, timeout, retry), daemon = True)
+                                       args = (mode, sd, ed, save_dir, timeout, retry, season_year), daemon = True)
         self.worker.start()
 
     def stop_scrape(self):
@@ -239,7 +299,7 @@ class kbo_naver_scrapper_gui:
         dpg.create_viewport(title = "KBO Naver Scrapper", width = 900, height = 600)
 
         with dpg.font_registry():
-            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
+                            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
             
@@ -249,12 +309,18 @@ class kbo_naver_scrapper_gui:
             dpg.add_text("KBO Naver Scrapper", bullet = True, color = (255, 0, 0), wrap = 800, parent="main")
             dpg.add_spacer(height=10, parent="main")
 
-            with dpg.group(horizontal = True, parent = "main"):
+            with dpg.group(horizontal=True, parent="main"):
+                dpg.add_text("수집 모드")
+                dpg.add_radio_button(items=list(self.modes.keys()), tag="mode", default_value="기간", callback=lambda s,a: self.update_mode_fields(), horizontal=True)
+
+            with dpg.group(horizontal = True, parent = "main", tag="group_period"):
                 dpg.add_text("시작일")
                 dpg.add_input_text(tag = "start_date", width = 120,
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
                 dpg.add_button(label = "V", width = 30,
                                tag = "btn_cal_start", callback = lambda: self.open_calendar("start_date"))
+                dpg.add_button(label = "오늘", width = 50,
+                               tag = "btn_today_start", callback = lambda: self.set_today("start_date"))
                 
                 dpg.add_spacer(width = 10)
 
@@ -263,6 +329,19 @@ class kbo_naver_scrapper_gui:
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
                 dpg.add_button(label = "V", width = 30,
                                tag = "btn_cal_end", callback = lambda: self.open_calendar("end_date"))
+                dpg.add_button(label = "오늘", width = 50,
+                               tag = "btn_today_end", callback = lambda: self.set_today("end_date"))
+
+            with dpg.group(horizontal=True, parent="main", tag="group_single"):
+                dpg.add_text("특정 날짜")
+                dpg.add_input_text(tag="single_date", width=120, readonly=True, default_value=datetime.date.today().strftime("%Y-%m-%d"))
+                dpg.add_button(label="V", width=30, tag="btn_cal_single", callback=lambda: self.open_calendar("single_date"))
+                dpg.add_button(label="오늘", width=50, tag="btn_today_single", callback=lambda: self.set_today("single_date"))
+
+            with dpg.group(horizontal=True, parent="main", tag="group_season"):
+                dpg.add_text("시즌 (2020~)")
+                years = [str(y) for y in range(2020, datetime.date.today().year + 1)]
+                dpg.add_combo(tag="season_year", width=120, items=years, default_value=years[-1])
             
             with dpg.group(horizontal = True, parent = "main"):
                 dpg.add_text("저장 경로")
@@ -285,8 +364,10 @@ class kbo_naver_scrapper_gui:
                 dpg.add_input_text(tag = "log", multiline = True, readonly = True, width = -1, height = -1)
             
         # 비활성화 대상 일괄 지정
-        self.disable_items = ["btn_start", "start_date", "end_date", "save_dir", 
-                            "timeout", "retry", "btn_cal_start", "btn_cal_end"]
+        self.disable_items = ["btn_start", "start_date", "end_date", "save_dir",
+                            "timeout", "retry", "btn_cal_start", "btn_cal_end",
+                            "btn_today_start", "btn_today_end", "single_date",
+                            "btn_cal_single", "btn_today_single", "season_year", "mode"]
 
         # 달력 UI 구성
         with dpg.window(tag = "calendar_modal",
@@ -308,6 +389,7 @@ class kbo_naver_scrapper_gui:
             dpg.add_button(label = "닫기", width = 60, callback = lambda: dpg.configure_item("calendar_modal", show = False))
         
         # 초기 렌더
+        self.update_mode_fields()
         self.render_calendar()
 
         # UI 실행

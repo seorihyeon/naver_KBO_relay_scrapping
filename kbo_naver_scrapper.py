@@ -440,7 +440,7 @@ class Scrapper:
             end_date = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
         if end_date < start_date:
             raise ValueError("종료일이 시작일보다 앞설 수 없습니다.")
-        
+
         cur = start_date
         while cur <= end_date:
             year, month, day = cur.year, cur.month, cur.day
@@ -463,13 +463,54 @@ class Scrapper:
                     if not ld:
                         # 끝까지 실패하면 스킵
                         continue
-                    
+
                     game_data = {"lineup": ld, "relay": ind, "record": rd}
                     filename = url.split('/')[-1] + '.json'
                     with open(self.path + filename, 'w', encoding = 'utf-8') as tgtfile:
                         json.dump(game_data, tgtfile, ensure_ascii=False, indent = 4)
-            
+
             cur += datetime.timedelta(days=1)
+
+    def iter_active_date_urls(self, start_date, end_date):
+        """
+        일정 페이지의 활성화된 날짜를 이용해 (날짜, 경기 URL 리스트)를 순회한다.
+
+        - start_date, end_date: datetime.date
+        - 활성화되지 않은 날짜는 자동으로 건너뛴다.
+        """
+        if end_date < start_date:
+            raise ValueError("종료일이 시작일보다 앞설 수 없습니다.")
+
+        self.driver.get(self.get_schedule_page_url(start_date.year, start_date.month, start_date.day))
+        cur_year, cur_month = start_date.year, start_date.month
+
+        while True:
+            activated_dates = self.get_activated_dates()
+            for day in activated_dates:
+                date_obj = datetime.date(cur_year, cur_month, day)
+                if date_obj < start_date or date_obj > end_date:
+                    continue
+
+                urls = self.get_game_urls(cur_year, cur_month, day)
+                yield date_obj, urls
+
+            if cur_year == end_date.year and cur_month == end_date.month:
+                break
+
+            if cur_month == 12:
+                next_year, next_month = cur_year + 1, 1
+            else:
+                next_year, next_month = cur_year, cur_month + 1
+
+            try:
+                moved = self.goto_next_month()
+            except Exception:
+                moved = 0
+
+            if not moved or self.get_current_month() != next_month:
+                self.driver.get(self.get_schedule_page_url(next_year, next_month, 1))
+
+            cur_year, cur_month = next_year, next_month
 
 if __name__ == "__main__":
     scrapper = Scrapper()
