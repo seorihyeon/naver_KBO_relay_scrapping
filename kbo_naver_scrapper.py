@@ -171,6 +171,7 @@ class Scrapper:
     # 이닝 데이터 전처리
     def preprocess_inning_data(self, inning_data):
         processed_data = inning_data["result"]["textRelayData"]["textRelays"]
+        processed_data.reverse()
 
         return processed_data
     

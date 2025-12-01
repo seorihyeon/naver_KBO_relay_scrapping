@@ -138,59 +138,61 @@ class kbo_naver_scrapper_gui:
 
         try:
             scr = Scrapper(wait = timeout, path = save_dir)
-            if mode == "season" and season_year is not None:
-                def fetch_and_save(url, prefix=""):
+
+            def fetch_and_save(url, prefix=""):
+                if self.stop_flag.is_set():
+                    return False
+
+                ld = {}
+                for _ in range(int(retry)):
+                    try:
+                        ld, ind, rd = scr.get_game_data(url)
+                        break
+                    except Exception as ex:
+                        self.log(f"{prefix} 재시도 필요: {ex}")
+
+                if not ld:
+                    self.log(f"{prefix}  경기 데이터 수집 실패: {url}")
+                    return False
+
+                filename = url.split('/')[-1] + ".json"
+                with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
+                    json.dump({
+                        "lineup": ld,
+                        "inning_data": ind,
+                        "record_data": rd
+                    }, f, ensure_ascii = False, indent = 4)
+                self.log(f"{prefix}  경기 데이터 저장 완료: {filename}")
+                return True
+
+            def make_process_day(day_complete, prefix=""):
+                def _process(cur_date, urls):
                     if self.stop_flag.is_set():
-                        return False
+                        return
 
-                    ld = {}
-                    for _ in range(int(retry)):
-                        try:
-                            ld, ind, rd = scr.get_game_data(url)
-                            break
-                        except Exception as ex:
-                            self.log(f"{prefix} 재시도 필요: {ex}")
+                    self.log(f"{prefix}{cur_date} 경기 정보 수집 시작...")
 
-                    if not ld:
-                        self.log(f"{prefix}  경기 데이터 수집 실패: {url}")
-                        return False
+                    if urls == -1:
+                        self.log(f"{prefix}{cur_date} KBO 일정이 없습니다.")
+                        day_complete()
+                        return
 
-                    filename = url.split('/')[-1] + ".json"
-                    with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
-                        json.dump({
-                            "lineup": ld,
-                            "inning_data": ind,
-                            "record_data": rd
-                        }, f, ensure_ascii = False, indent = 4)
-                    self.log(f"{prefix}  경기 데이터 저장 완료: {filename}")
-                    return True
+                    if not urls:
+                        self.log(f"{prefix}{cur_date} 경기 없음/로딩 실패.")
+                        day_complete()
+                        return
 
-                def make_process_day(day_complete, prefix=""):
-                    def _process(cur_date, urls):
+                    for url in urls:
                         if self.stop_flag.is_set():
-                            return
+                            break
+                        fetch_and_save(url, prefix)
 
-                        self.log(f"{prefix}{cur_date} 경기 정보 수집 시작...")
+                    if not self.stop_flag.is_set():
+                        day_complete()
 
-                        if urls == -1:
-                            self.log(f"{prefix}{cur_date} KBO 일정이 없습니다.")
-                            day_complete()
-                            return
-
-                        if not urls:
-                            self.log(f"{prefix}{cur_date} 경기 없음/로딩 실패.")
-                            day_complete()
-                            return
-
-                        for url in urls:
-                            if self.stop_flag.is_set():
-                                break
-                            fetch_and_save(url, prefix)
-
-                        if not self.stop_flag.is_set():
-                            day_complete()
-
-                    return _process
+                return _process
+            
+            if mode == "season" and season_year is not None:
 
                 self.log(f"[시작] 시즌 전체 수집: {season_year} (timeout={timeout}, retry={retry})")
                 monthly_active = []
