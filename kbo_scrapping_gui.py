@@ -282,7 +282,7 @@ class kbo_naver_scrapper_gui:
         dpg.create_viewport(title = "KBO Naver Scrapper", width = 900, height = 600)
 
         with dpg.font_registry():
-                            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
+            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
             
