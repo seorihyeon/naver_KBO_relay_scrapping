@@ -323,6 +323,23 @@ class Scrapper:
 
         return activated_dates
 
+    def get_activated_dates_for_month(self, year, month, day = 1):
+        """Load a month's schedule page and return enabled dates for that month.
+
+        Parameters
+        ----------
+        year, month: int
+            Target year/month to load.
+        day: int, optional
+            Day to use when constructing the schedule URL (default: 1).
+        """
+        self.driver.get(self.get_schedule_page_url(year, month, day))
+
+        try:
+            return self.get_activated_dates()
+        except Exception:
+            return []
+
     # 일자 지정하여 일정 주소 반환
     def get_schedule_page_url(self, year, month, date):
         base = "https://m.sports.naver.com/kbaseball/schedule/index?date="

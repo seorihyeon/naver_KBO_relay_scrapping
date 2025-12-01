@@ -140,67 +140,140 @@ class kbo_naver_scrapper_gui:
             scr = Scrapper(wait = timeout, path = save_dir)
             if mode == "season" and season_year is not None:
                 self.log(f"[시작] 시즌 전체 수집: {season_year} (timeout={timeout}, retry={retry})")
-            else:
-                self.log(f"[시작] KBO Naver Scrapper 작업 시작: {start_date} ~ {end_date} (timeout={timeout}, retry={retry})")
+                monthly_active = []
+                total_days = 0
 
-            active_entries = list(scr.iter_active_date_urls(start_date, end_date))
-            total_days = len(active_entries)
+                for month in range(1, 13):
+                    self.log(f"[시즌] {month}월 활성화 날짜 탐색 중...")
+                    active_days = scr.get_activated_dates_for_month(season_year, month)
 
-            if total_days == 0:
-                self.log("활성화된 일정이 없습니다.")
-                self.msg_q.put(("progress", 1.0))
-                return
+                    filtered = [d for d in active_days
+                                if start_date <= datetime.date(season_year, month, d) <= end_date]
+                    self.log(f"[시즌] {month}월 활성화 날짜 {len(filtered)}건 발견.")
 
-            done_days = 0
+                    total_days += len(filtered)
+                    monthly_active.append((month, filtered))
 
-            def day_complete():
-                nonlocal done_days
-                done_days += 1
-                self.msg_q.put(("progress", done_days / total_days))
+                if total_days == 0:
+                    self.log("활성화된 일정이 없습니다.")
+                    self.msg_q.put(("progress", 1.0))
+                    return
 
-            for cur, urls in active_entries:
-                if self.stop_flag.is_set():
-                    break
+                done_days = 0
 
-                prefix = "[시즌] " if mode == "season" else ""
-                self.log(f"{prefix}{cur} 경기 정보 수집 시작...")
+                def day_complete():
+                    nonlocal done_days
+                    done_days += 1
+                    self.msg_q.put(("progress", done_days / total_days))
 
-                if urls == -1:
-                    self.log(f"{prefix}{cur} KBO 일정이 없습니다.")
-                    day_complete()
-                    continue
-
-                if not urls:
-                    self.log(f"{prefix}{cur} 경기 없음/로딩 실패.")
-                    day_complete()
-                    continue
-
-                for url in urls:
+                for month, days in monthly_active:
                     if self.stop_flag.is_set():
                         break
 
-                    ld = {}
-                    for _ in range(int(retry)):
-                        try:
-                            ld, ind, rd = scr.get_game_data(url)
+                    for day in days:
+                        if self.stop_flag.is_set():
                             break
-                        except Exception as ex:
-                            self.log(f" 재시도 필요: {ex}")
 
-                    if not ld:
-                        self.log(f"  경기 데이터 수집 실패: {url}")
+                        cur = datetime.date(season_year, month, day)
+                        self.log(f"[시즌] {cur} 경기 정보 수집 시작...")
+
+                        urls = scr.get_game_urls(season_year, month, day)
+                        if urls == -1:
+                            self.log(f"[시즌] {cur} KBO 일정이 없습니다.")
+                            day_complete()
+                            continue
+
+                        if not urls:
+                            self.log(f"[시즌] {cur} 경기 없음/로딩 실패.")
+                            day_complete()
+                            continue
+
+                        for url in urls:
+                            if self.stop_flag.is_set():
+                                break
+
+                            ld = {}
+                            for _ in range(int(retry)):
+                                try:
+                                    ld, ind, rd = scr.get_game_data(url)
+                                    break
+                                except Exception as ex:
+                                    self.log(f" 재시도 필요: {ex}")
+
+                            if not ld:
+                                self.log(f"  경기 데이터 수집 실패: {url}")
+                                continue
+
+                            filename = url.split('/')[-1] + ".json"
+                            with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
+                                json.dump({
+                                    "lineup": ld,
+                                    "inning_data": ind,
+                                    "record_data": rd
+                                }, f, ensure_ascii = False, indent = 4)
+                            self.log(f"  경기 데이터 저장 완료: {filename}")
+
+                        day_complete()
+            else:
+                self.log(f"[시작] KBO Naver Scrapper 작업 시작: {start_date} ~ {end_date} (timeout={timeout}, retry={retry})")
+
+                active_entries = list(scr.iter_active_date_urls(start_date, end_date))
+                total_days = len(active_entries)
+
+                if total_days == 0:
+                    self.log("활성화된 일정이 없습니다.")
+                    self.msg_q.put(("progress", 1.0))
+                    return
+
+                done_days = 0
+
+                def day_complete():
+                    nonlocal done_days
+                    done_days += 1
+                    self.msg_q.put(("progress", done_days / total_days))
+
+                for cur, urls in active_entries:
+                    if self.stop_flag.is_set():
+                        break
+
+                    self.log(f"{cur} 경기 정보 수집 시작...")
+
+                    if urls == -1:
+                        self.log(f"{cur} KBO 일정이 없습니다.")
+                        day_complete()
                         continue
 
-                    filename = url.split('/')[-1] + ".json"
-                    with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
-                        json.dump({
-                            "lineup": ld,
-                            "inning_data": ind,
-                            "record_data": rd
-                        }, f, ensure_ascii = False, indent = 4)
-                    self.log(f"  경기 데이터 저장 완료: {filename}")
+                    if not urls:
+                        self.log(f"{cur} 경기 없음/로딩 실패.")
+                        day_complete()
+                        continue
 
-                day_complete()
+                    for url in urls:
+                        if self.stop_flag.is_set():
+                            break
+
+                        ld = {}
+                        for _ in range(int(retry)):
+                            try:
+                                ld, ind, rd = scr.get_game_data(url)
+                                break
+                            except Exception as ex:
+                                self.log(f" 재시도 필요: {ex}")
+
+                        if not ld:
+                            self.log(f"  경기 데이터 수집 실패: {url}")
+                            continue
+
+                        filename = url.split('/')[-1] + ".json"
+                        with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
+                            json.dump({
+                                "lineup": ld,
+                                "inning_data": ind,
+                                "record_data": rd
+                            }, f, ensure_ascii = False, indent = 4)
+                        self.log(f"  경기 데이터 저장 완료: {filename}")
+
+                    day_complete()
 
             if self.stop_flag.is_set():
                 self.log("[중지] 작업이 중지되었습니다.")
