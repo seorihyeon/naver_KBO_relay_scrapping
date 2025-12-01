@@ -15,6 +15,13 @@ class kbo_naver_scrapper_gui:
         self.cal_year = today.year
         self.cal_month = today.month
         self.cal_target_input = None
+
+        # 모드 상태
+        self.modes = {
+            "기간": "period",
+            "특정 날짜": "single",
+            "시즌": "season"
+        }
     
     # 로그/메시지 업데이트
     def log(self, msg):
@@ -116,9 +123,13 @@ class kbo_naver_scrapper_gui:
         first_of_next = datetime.date(y, m, 1)
         if first_of_next > datetime.date.today():
             return
-        
+
         self.cal_year, self.cal_month = y, m
         self.render_calendar()
+
+    def set_today(self, target_input):
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        dpg.set_value(target_input, today)
 
     # 스크래핑 작업
     def run_scraper(self, start_date, end_date, save_dir, timeout, retry):
@@ -196,6 +207,31 @@ class kbo_naver_scrapper_gui:
             self.msg_q.put(("done", None))
 
     # UI 이벤트
+    def update_mode_fields(self):
+        mode_key = dpg.get_value("mode")
+        mode = self.modes.get(mode_key, "period")
+
+        period_items = ["start_date", "btn_cal_start", "btn_today_start",
+                         "end_date", "btn_cal_end", "btn_today_end"]
+        single_items = ["single_date", "btn_cal_single", "btn_today_single"]
+        season_items = ["season_year"]
+
+        all_items = set(period_items + single_items + season_items)
+        for item in all_items:
+            dpg.configure_item(item, enabled = False)
+
+        if mode == "period":
+            active = period_items
+        elif mode == "single":
+            active = single_items
+        elif mode == "season":
+            active = season_items
+        else:
+            active = []
+
+        for item in active:
+            dpg.configure_item(item, enabled = True)
+
     def start_scrape(self):
         if self.worker and self.worker.is_alive():
             self.log("이미 작업이 진행 중입니다.")
@@ -205,15 +241,31 @@ class kbo_naver_scrapper_gui:
         timeout = dpg.get_value("timeout")
         retry = dpg.get_value("retry")
 
+        mode_key = dpg.get_value("mode")
+        mode = self.modes.get(mode_key, "period")
+
         try:
-            sd = datetime.datetime.strptime(dpg.get_value("start_date"), "%Y-%m-%d").date()
-            ed = datetime.datetime.strptime(dpg.get_value("end_date"), "%Y-%m-%d").date()
+            if mode == "period":
+                sd = datetime.datetime.strptime(dpg.get_value("start_date"), "%Y-%m-%d").date()
+                ed = datetime.datetime.strptime(dpg.get_value("end_date"), "%Y-%m-%d").date()
+                if ed < sd:
+                    self.log("종료일은 시작일보다 이전일 수 없습니다.")
+                    return
+            elif mode == "single":
+                target = datetime.datetime.strptime(dpg.get_value("single_date"), "%Y-%m-%d").date()
+                sd = ed = target
+            elif mode == "season":
+                year = int(dpg.get_value("season_year"))
+                if year < 2020:
+                    self.log("시즌은 2020년부터 선택 가능합니다.")
+                    return
+                sd = datetime.date(year, 1, 1)
+                ed = datetime.date(year, 12, 31)
+            else:
+                self.log("알 수 없는 수집 모드입니다.")
+                return
         except ValueError:
             self.log("날짜 형식이 올바르지 않습니다.")
-            return
-        
-        if ed < sd:
-            self.log("종료일은 시작일보다 이전일 수 없습니다.")
             return
 
         os.makedirs(save_dir, exist_ok = True)
@@ -239,7 +291,7 @@ class kbo_naver_scrapper_gui:
         dpg.create_viewport(title = "KBO Naver Scrapper", width = 900, height = 600)
 
         with dpg.font_registry():
-            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
+                            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
             
@@ -249,12 +301,18 @@ class kbo_naver_scrapper_gui:
             dpg.add_text("KBO Naver Scrapper", bullet = True, color = (255, 0, 0), wrap = 800, parent="main")
             dpg.add_spacer(height=10, parent="main")
 
+            with dpg.group(horizontal=True, parent="main"):
+                dpg.add_text("수집 모드")
+                dpg.add_radio_button(items=list(self.modes.keys()), tag="mode", default_value="기간", callback=lambda s,a: self.update_mode_fields())
+
             with dpg.group(horizontal = True, parent = "main"):
                 dpg.add_text("시작일")
                 dpg.add_input_text(tag = "start_date", width = 120,
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
                 dpg.add_button(label = "V", width = 30,
                                tag = "btn_cal_start", callback = lambda: self.open_calendar("start_date"))
+                dpg.add_button(label = "오늘", width = 50,
+                               tag = "btn_today_start", callback = lambda: self.set_today("start_date"))
                 
                 dpg.add_spacer(width = 10)
 
@@ -263,6 +321,19 @@ class kbo_naver_scrapper_gui:
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
                 dpg.add_button(label = "V", width = 30,
                                tag = "btn_cal_end", callback = lambda: self.open_calendar("end_date"))
+                dpg.add_button(label = "오늘", width = 50,
+                               tag = "btn_today_end", callback = lambda: self.set_today("end_date"))
+
+            with dpg.group(horizontal=True, parent="main"):
+                dpg.add_text("특정 날짜")
+                dpg.add_input_text(tag="single_date", width=120, readonly=True, default_value=datetime.date.today().strftime("%Y-%m-%d"))
+                dpg.add_button(label="V", width=30, tag="btn_cal_single", callback=lambda: self.open_calendar("single_date"))
+                dpg.add_button(label="오늘", width=50, tag="btn_today_single", callback=lambda: self.set_today("single_date"))
+
+            with dpg.group(horizontal=True, parent="main"):
+                dpg.add_text("시즌 (2020~)")
+                years = [str(y) for y in range(2020, datetime.date.today().year + 1)]
+                dpg.add_combo(tag="season_year", width=120, items=years, default_value=years[-1])
             
             with dpg.group(horizontal = True, parent = "main"):
                 dpg.add_text("저장 경로")
@@ -285,8 +356,10 @@ class kbo_naver_scrapper_gui:
                 dpg.add_input_text(tag = "log", multiline = True, readonly = True, width = -1, height = -1)
             
         # 비활성화 대상 일괄 지정
-        self.disable_items = ["btn_start", "start_date", "end_date", "save_dir", 
-                            "timeout", "retry", "btn_cal_start", "btn_cal_end"]
+        self.disable_items = ["btn_start", "start_date", "end_date", "save_dir",
+                            "timeout", "retry", "btn_cal_start", "btn_cal_end",
+                            "btn_today_start", "btn_today_end", "single_date",
+                            "btn_cal_single", "btn_today_single", "season_year", "mode"]
 
         # 달력 UI 구성
         with dpg.window(tag = "calendar_modal",
@@ -308,6 +381,7 @@ class kbo_naver_scrapper_gui:
             dpg.add_button(label = "닫기", width = 60, callback = lambda: dpg.configure_item("calendar_modal", show = False))
         
         # 초기 렌더
+        self.update_mode_fields()
         self.render_calendar()
 
         # UI 실행
