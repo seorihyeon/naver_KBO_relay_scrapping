@@ -211,26 +211,17 @@ class kbo_naver_scrapper_gui:
         mode_key = dpg.get_value("mode")
         mode = self.modes.get(mode_key, "period")
 
-        period_items = ["start_date", "btn_cal_start", "btn_today_start",
-                         "end_date", "btn_cal_end", "btn_today_end"]
-        single_items = ["single_date", "btn_cal_single", "btn_today_single"]
-        season_items = ["season_year"]
+        show_map = {
+            "period": ["group_period"],
+            "single": ["group_single"],
+            "season": ["group_season"],
+        }
 
-        all_items = set(period_items + single_items + season_items)
-        for item in all_items:
-            dpg.configure_item(item, enabled = False)
+        for group in ["group_period", "group_single", "group_season"]:
+            dpg.configure_item(group, show = False)
 
-        if mode == "period":
-            active = period_items
-        elif mode == "single":
-            active = single_items
-        elif mode == "season":
-            active = season_items
-        else:
-            active = []
-
-        for item in active:
-            dpg.configure_item(item, enabled = True)
+        for group in show_map.get(mode, []):
+            dpg.configure_item(group, show = True)
 
     def start_scrape(self):
         if self.worker and self.worker.is_alive():
@@ -303,9 +294,9 @@ class kbo_naver_scrapper_gui:
 
             with dpg.group(horizontal=True, parent="main"):
                 dpg.add_text("수집 모드")
-                dpg.add_radio_button(items=list(self.modes.keys()), tag="mode", default_value="기간", callback=lambda s,a: self.update_mode_fields())
+                dpg.add_radio_button(items=list(self.modes.keys()), tag="mode", default_value="기간", callback=lambda s,a: self.update_mode_fields(), horizontal=True)
 
-            with dpg.group(horizontal = True, parent = "main"):
+            with dpg.group(horizontal = True, parent = "main", tag="group_period"):
                 dpg.add_text("시작일")
                 dpg.add_input_text(tag = "start_date", width = 120,
                                    readonly = True, default_value = datetime.date.today().strftime("%Y-%m-%d"))
@@ -324,13 +315,13 @@ class kbo_naver_scrapper_gui:
                 dpg.add_button(label = "오늘", width = 50,
                                tag = "btn_today_end", callback = lambda: self.set_today("end_date"))
 
-            with dpg.group(horizontal=True, parent="main"):
+            with dpg.group(horizontal=True, parent="main", tag="group_single"):
                 dpg.add_text("특정 날짜")
                 dpg.add_input_text(tag="single_date", width=120, readonly=True, default_value=datetime.date.today().strftime("%Y-%m-%d"))
                 dpg.add_button(label="V", width=30, tag="btn_cal_single", callback=lambda: self.open_calendar("single_date"))
                 dpg.add_button(label="오늘", width=50, tag="btn_today_single", callback=lambda: self.set_today("single_date"))
 
-            with dpg.group(horizontal=True, parent="main"):
+            with dpg.group(horizontal=True, parent="main", tag="group_season"):
                 dpg.add_text("시즌 (2020~)")
                 years = [str(y) for y in range(2020, datetime.date.today().year + 1)]
                 dpg.add_combo(tag="season_year", width=120, items=years, default_value=years[-1])
