@@ -139,6 +139,59 @@ class kbo_naver_scrapper_gui:
         try:
             scr = Scrapper(wait = timeout, path = save_dir)
             if mode == "season" and season_year is not None:
+                def fetch_and_save(url, prefix=""):
+                    if self.stop_flag.is_set():
+                        return False
+
+                    ld = {}
+                    for _ in range(int(retry)):
+                        try:
+                            ld, ind, rd = scr.get_game_data(url)
+                            break
+                        except Exception as ex:
+                            self.log(f"{prefix} 재시도 필요: {ex}")
+
+                    if not ld:
+                        self.log(f"{prefix}  경기 데이터 수집 실패: {url}")
+                        return False
+
+                    filename = url.split('/')[-1] + ".json"
+                    with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
+                        json.dump({
+                            "lineup": ld,
+                            "inning_data": ind,
+                            "record_data": rd
+                        }, f, ensure_ascii = False, indent = 4)
+                    self.log(f"{prefix}  경기 데이터 저장 완료: {filename}")
+                    return True
+
+                def make_process_day(day_complete, prefix=""):
+                    def _process(cur_date, urls):
+                        if self.stop_flag.is_set():
+                            return
+
+                        self.log(f"{prefix}{cur_date} 경기 정보 수집 시작...")
+
+                        if urls == -1:
+                            self.log(f"{prefix}{cur_date} KBO 일정이 없습니다.")
+                            day_complete()
+                            return
+
+                        if not urls:
+                            self.log(f"{prefix}{cur_date} 경기 없음/로딩 실패.")
+                            day_complete()
+                            return
+
+                        for url in urls:
+                            if self.stop_flag.is_set():
+                                break
+                            fetch_and_save(url, prefix)
+
+                        if not self.stop_flag.is_set():
+                            day_complete()
+
+                    return _process
+
                 self.log(f"[시작] 시즌 전체 수집: {season_year} (timeout={timeout}, retry={retry})")
                 monthly_active = []
                 total_days = 0
@@ -166,6 +219,8 @@ class kbo_naver_scrapper_gui:
                     done_days += 1
                     self.msg_q.put(("progress", done_days / total_days))
 
+                process_day = make_process_day(day_complete, prefix="[시즌] ")
+
                 for month, days in monthly_active:
                     if self.stop_flag.is_set():
                         break
@@ -175,45 +230,8 @@ class kbo_naver_scrapper_gui:
                             break
 
                         cur = datetime.date(season_year, month, day)
-                        self.log(f"[시즌] {cur} 경기 정보 수집 시작...")
-
                         urls = scr.get_game_urls(season_year, month, day)
-                        if urls == -1:
-                            self.log(f"[시즌] {cur} KBO 일정이 없습니다.")
-                            day_complete()
-                            continue
-
-                        if not urls:
-                            self.log(f"[시즌] {cur} 경기 없음/로딩 실패.")
-                            day_complete()
-                            continue
-
-                        for url in urls:
-                            if self.stop_flag.is_set():
-                                break
-
-                            ld = {}
-                            for _ in range(int(retry)):
-                                try:
-                                    ld, ind, rd = scr.get_game_data(url)
-                                    break
-                                except Exception as ex:
-                                    self.log(f" 재시도 필요: {ex}")
-
-                            if not ld:
-                                self.log(f"  경기 데이터 수집 실패: {url}")
-                                continue
-
-                            filename = url.split('/')[-1] + ".json"
-                            with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
-                                json.dump({
-                                    "lineup": ld,
-                                    "inning_data": ind,
-                                    "record_data": rd
-                                }, f, ensure_ascii = False, indent = 4)
-                            self.log(f"  경기 데이터 저장 완료: {filename}")
-
-                        day_complete()
+                        process_day(cur, urls)
             else:
                 self.log(f"[시작] KBO Naver Scrapper 작업 시작: {start_date} ~ {end_date} (timeout={timeout}, retry={retry})")
 
@@ -232,48 +250,12 @@ class kbo_naver_scrapper_gui:
                     done_days += 1
                     self.msg_q.put(("progress", done_days / total_days))
 
+                process_day = make_process_day(day_complete)
+
                 for cur, urls in active_entries:
                     if self.stop_flag.is_set():
                         break
-
-                    self.log(f"{cur} 경기 정보 수집 시작...")
-
-                    if urls == -1:
-                        self.log(f"{cur} KBO 일정이 없습니다.")
-                        day_complete()
-                        continue
-
-                    if not urls:
-                        self.log(f"{cur} 경기 없음/로딩 실패.")
-                        day_complete()
-                        continue
-
-                    for url in urls:
-                        if self.stop_flag.is_set():
-                            break
-
-                        ld = {}
-                        for _ in range(int(retry)):
-                            try:
-                                ld, ind, rd = scr.get_game_data(url)
-                                break
-                            except Exception as ex:
-                                self.log(f" 재시도 필요: {ex}")
-
-                        if not ld:
-                            self.log(f"  경기 데이터 수집 실패: {url}")
-                            continue
-
-                        filename = url.split('/')[-1] + ".json"
-                        with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
-                            json.dump({
-                                "lineup": ld,
-                                "inning_data": ind,
-                                "record_data": rd
-                            }, f, ensure_ascii = False, indent = 4)
-                        self.log(f"  경기 데이터 저장 완료: {filename}")
-
-                    day_complete()
+                    process_day(cur, urls)
 
             if self.stop_flag.is_set():
                 self.log("[중지] 작업이 중지되었습니다.")
@@ -372,7 +354,7 @@ class kbo_naver_scrapper_gui:
         dpg.create_viewport(title = "KBO Naver Scrapper", width = 900, height = 600)
 
         with dpg.font_registry():
-                            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
+            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
             
@@ -384,7 +366,8 @@ class kbo_naver_scrapper_gui:
 
             with dpg.group(horizontal=True, parent="main"):
                 dpg.add_text("수집 모드")
-                dpg.add_radio_button(items=list(self.modes.keys()), tag="mode", default_value="기간", callback=lambda s,a: self.update_mode_fields(), horizontal=True)
+                dpg.add_radio_button(items=list(self.modes.keys()), tag="mode", default_value="기간",
+                                     callback=lambda s, a: self.update_mode_fields(), horizontal=True)
 
             with dpg.group(horizontal = True, parent = "main", tag="group_period"):
                 dpg.add_text("시작일")
@@ -437,10 +420,12 @@ class kbo_naver_scrapper_gui:
                 dpg.add_input_text(tag = "log", multiline = True, readonly = True, width = -1, height = -1)
             
         # 비활성화 대상 일괄 지정
-        self.disable_items = ["btn_start", "start_date", "end_date", "save_dir",
-                            "timeout", "retry", "btn_cal_start", "btn_cal_end",
-                            "btn_today_start", "btn_today_end", "single_date",
-                            "btn_cal_single", "btn_today_single", "season_year", "mode"]
+        self.disable_items = [
+            "btn_start", "start_date", "end_date", "save_dir",
+            "timeout", "retry", "btn_cal_start", "btn_cal_end",
+            "btn_today_start", "btn_today_end", "single_date",
+            "btn_cal_single", "btn_today_single", "season_year", "mode"
+        ]
 
         # 달력 UI 구성
         with dpg.window(tag = "calendar_modal",
@@ -480,6 +465,5 @@ class kbo_naver_scrapper_gui:
         self.build_ui()
 
 if __name__ == "__main__":
-    print(os.path.exists("fonts/NanumGothic.ttf"))
     gui = kbo_naver_scrapper_gui()
     gui.run()
