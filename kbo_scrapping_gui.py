@@ -159,8 +159,8 @@ class kbo_naver_scrapper_gui:
                 with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
                     json.dump({
                         "lineup": ld,
-                        "inning_data": ind,
-                        "record_data": rd
+                        "relay": ind,
+                        "record": rd
                     }, f, ensure_ascii = False, indent = 4)
                 self.log(f"{prefix}  경기 데이터 저장 완료: {filename}")
                 return True

@@ -1,8 +1,4 @@
-import datetime
-import json
-import time
-import os
-import re
+import datetime, json, time, os, re
 from seleniumwire import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options as EdgeOptions
