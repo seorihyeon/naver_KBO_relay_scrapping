@@ -631,8 +631,8 @@ def validate_game_full(game: Dict[str, Any]) -> Dict[str, Any]:
     }
     """
     lineup = game.get("lineup", {})
-    inning_data = game.get("inning_data", [])
-    record = game.get("record_data", {})
+    inning_data = game.get("relay", [])
+    record = game.get("record", {})
 
     li = extract_lineup_players(lineup)
     rb = extract_record_batters(record.get("batter", {}))
@@ -695,7 +695,7 @@ if __name__ == "__main__":
     import pathlib
 
     # 단일 파일 테스트
-    json_path = pathlib.Path("games/20250515KTSS02025.json")
+    json_path = pathlib.Path("games/2025/20250515KTSS02025.json")
 
     with json_path.open(encoding="utf-8") as f:
         game_data = json.load(f)
