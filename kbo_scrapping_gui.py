@@ -140,7 +140,7 @@ class kbo_naver_scrapper_gui:
         try:
             scr = Scrapper(wait = timeout, path = save_dir)
 
-            def fetch_and_save(url, prefix=""):
+            def fetch_and_save(url, prefix="", game_date=None):
                 if self.stop_flag.is_set():
                     return False
 
@@ -175,7 +175,13 @@ class kbo_naver_scrapper_gui:
                             self.log(f"{prefix}-{msg}")
 
                 filename = url.split('/')[-1] + ".json"
-                with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
+                target_dir = save_dir
+                if game_date is not None:
+                    target_dir = os.path.join(save_dir, f"{game_date.year}")
+
+                os.makedirs(target_dir, exist_ok=True)
+
+                with open(os.path.join(target_dir, filename), "w", encoding = "utf-8") as f:
                     json.dump({
                         "lineup": ld,
                         "relay": ind,
@@ -204,7 +210,7 @@ class kbo_naver_scrapper_gui:
                     for url in urls:
                         if self.stop_flag.is_set():
                             break
-                        fetch_and_save(url, prefix)
+                        fetch_and_save(url, prefix, cur_date)
 
                     if not self.stop_flag.is_set():
                         day_complete()
