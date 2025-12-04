@@ -372,3 +372,5 @@ class Scrapper:
                 self.driver.get(self.get_schedule_page_url(next_year, next_month, 1))
 
             cur_year, cur_month = next_year, next_month
+
+    

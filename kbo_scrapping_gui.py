@@ -2,6 +2,7 @@ import os, json, threading, datetime, queue, traceback, calendar
 import dearpygui.dearpygui as dpg
 from selenium.common.exceptions import TimeoutException
 from kbo_naver_scrapper import Scrapper
+import check_data
 
 class kbo_naver_scrapper_gui:
     def __init__(self):
@@ -144,16 +145,34 @@ class kbo_naver_scrapper_gui:
                     return False
 
                 ld = {}
+                data_check = None
                 for _ in range(int(retry)):
                     try:
                         ld, ind, rd = scr.get_game_data(url)
-                        break
+                        game_data = {
+                            "lineup": ld,
+                            "relay": ind,
+                            "record": rd}
+                        data_check = check_data.validate_game_full(game_data)
+                        if data_check["ok"]:
+                            break
                     except Exception as ex:
                         self.log(f"{prefix} 재시도 필요: {ex}")
 
                 if not ld:
                     self.log(f"{prefix}  경기 데이터 수집 실패: {url}")
                     return False
+                
+                if data_check:
+                    if data_check["issues"]:
+                        self.log(f"{prefix} 경기 데이터에 이상 존재: {url}")
+                        for msg in data_check["issues"]:
+                            self.log(f"{prefix}-{msg}")
+                        return False
+                    if data_check["warnings"]:
+                        self.log(f"{prefix} 경기 데이터에 주의사항 존재: {url}")
+                        for msg in data_check["warnings"]:
+                            self.log(f"{prefix}-{msg}")
 
                 filename = url.split('/')[-1] + ".json"
                 with open(os.path.join(save_dir, filename), "w", encoding = "utf-8") as f:
