@@ -498,6 +498,8 @@ def check_lineup_vs_record_pitcher(lineup_info, record_pits):
 
     for side in ["home", "away"]:
         lineup_pitchers = set(lineup_info[side]["bullpen"].keys())
+        lineup_pitchers.update(lineup_info[side]["starter_batters"].keys())
+        lineup_pitchers.update(lineup_info[side]["candidates"].keys())
         if lineup_info[side]["starter_pitcher"]:
             lineup_pitchers.add(lineup_info[side]["starter_pitcher"])
 
@@ -523,6 +525,8 @@ def check_inning_pitcher_codes_vs_record_and_lineup(
         inning_codes = inning_pitcher_codes[side]
 
         lineup_pitchers = set(lineup_info[side]["bullpen"].keys())
+        lineup_pitchers.update(lineup_info[side]["starter_batters"].keys())
+        lineup_pitchers.update(lineup_info[side]["candidates"].keys())
         if lineup_info[side]["starter_pitcher"]:
             lineup_pitchers.add(lineup_info[side]["starter_pitcher"])
 
