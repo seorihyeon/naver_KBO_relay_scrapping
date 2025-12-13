@@ -203,7 +203,8 @@ def classify_pa_text(text: str):
 
     # 볼넷 / 사구
     is_hbp = "몸에 맞는 볼" in text
-    is_walk = ("볼넷" in text) and not is_hbp
+    walk_keywords = ["볼넷", "고의4구", "고의 4구"]
+    is_walk = any(kw in text for kw in walk_keywords) and not is_hbp
 
     # 안타 계열
     hit_keywords = ["안타", "1루타", "2루타", "3루타", "홈런"]
@@ -213,7 +214,7 @@ def classify_pa_text(text: str):
     is_sac = ("희생플라이" in text) or ("희생번트" in text)
 
     # 삼진
-    is_so = ("삼진 아웃" in text) or ("스트라이크 낫 아웃" in text)
+    is_so = ("삼진 아웃" in text) or ("스트라이크 낫 아웃" in text) or ("스트라이크 낫아웃" in text)
 
     # 기본 카운트
     pa = 1  # type 13/23이면 무조건 타석 1개로 처리
