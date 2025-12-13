@@ -144,6 +144,27 @@ class kbo_naver_scrapper_gui:
                 if self.stop_flag.is_set():
                     return False
 
+                filename = url.split('/')[-1] + ".json"
+                target_dir = save_dir
+                if game_date is not None:
+                    target_dir = os.path.join(save_dir, f"{game_date.year}")
+
+                os.makedirs(target_dir, exist_ok=True)
+
+                # 이미 저장된 파일이 있으면 무결성 체크 후 통과 시 스킵
+                target_path = os.path.join(target_dir, filename)
+                if os.path.exists(target_path):
+                    try:
+                        with open(target_path, "r", encoding="utf-8") as f:
+                            existing = json.load(f)
+                        valid = check_data.validate_game_full(existing)
+                        if valid.get("ok"):
+                            self.log(f"{prefix}  기존 데이터 검증 통과: {filename} (스킵)")
+                            return True
+                        self.log(f"{prefix}  기존 데이터 이상 발견 → 재수집 진행: {filename}")
+                    except Exception as ex:
+                        self.log(f"{prefix}  기존 데이터 로드/검증 실패({ex}) → 재수집 진행: {filename}")
+
                 ld = {}
                 for _ in range(int(retry)):
                     try:
@@ -157,14 +178,7 @@ class kbo_naver_scrapper_gui:
                     self.log(f"{prefix}  경기 데이터 수집 실패: {url}")
                     return False
 
-                filename = url.split('/')[-1] + ".json"
-                target_dir = save_dir
-                if game_date is not None:
-                    target_dir = os.path.join(save_dir, f"{game_date.year}")
-
-                os.makedirs(target_dir, exist_ok=True)
-
-                with open(os.path.join(target_dir, filename), "w", encoding = "utf-8") as f:
+                with open(target_path, "w", encoding = "utf-8") as f:
                     json.dump({
                         "lineup": ld,
                         "relay": ind,
