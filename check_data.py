@@ -1,6 +1,7 @@
 import json
 import collections
 from typing import Dict, Any
+from pathlib import Path
 
 
 ##############################
@@ -190,40 +191,90 @@ def extract_record_pitchers(pitcher_block: Dict[str, Any]) -> Dict[str, Any]:
 
 
 ##############################
-# 4) 이닝 중계에서 타자 스탯 추출
+# 4) 중계 텍스트(type 13/23) 기반 타자 스탯
 ##############################
 
-def extract_inning_batters(inning_data) -> Dict[str, Any]:
+def classify_pa_text(text: str):
     """
-    inning_data.textOptions[].batterRecord 를 훑어서
-    타자별 누적 스탯의 최댓값을 사용.
-    (ab, hit, bb, hr, rbi, so 는 잘 누적되지만 run/sb 는 복원이 안 되므로 제외)
+    중계 한 줄(text, type 13/23)에 대해
+    PA/AB/H/BB/SO/HBP 여부를 판별.
     """
-    fields = ["ab", "hit", "bb", "hr", "rbi", "so"]
-    team_stats = {
-        "home": collections.defaultdict(lambda: {f: 0 for f in fields}),
-        "away": collections.defaultdict(lambda: {f: 0 for f in fields}),
-    }
+    text = text or ""
+
+    # 볼넷 / 사구
+    is_hbp = "몸에 맞는 볼" in text
+    is_walk = ("볼넷" in text) and not is_hbp
+
+    # 안타 계열
+    hit_keywords = ["안타", "1루타", "2루타", "3루타", "홈런"]
+    is_hit = any(kw in text for kw in hit_keywords)
+
+    # 희생타
+    is_sac = ("희생플라이" in text) or ("희생번트" in text)
+
+    # 삼진
+    is_so = ("삼진 아웃" in text) or ("스트라이크 낫 아웃" in text)
+
+    # 기본 카운트
+    pa = 1  # type 13/23이면 무조건 타석 1개로 처리
+    ab = hit = bb = so = hbp = 0
+
+    if is_walk:
+        bb = 1
+    elif is_hbp:
+        hbp = 1
+    elif is_hit:
+        ab = 1
+        hit = 1
+    else:
+        # 희생타는 AB가 아니고, 나머지 아웃/출루 등은 AB 1
+        if not is_sac:
+            ab = 1
+
+    if is_so:
+        so = 1
+
+    return dict(
+        pa=pa, ab=ab, hit=hit, bb=bb, so=so, hbp=hbp,
+        is_walk=is_walk, is_hbp=is_hbp, is_hit=is_hit,
+        is_sac=is_sac, is_so=is_so,
+    )
+
+
+def build_batter_stats_from_relay(inning_data):
+    """
+    inning_data에서 type 13/23만 골라
+    home/away, playerCode별로
+    pa/ab/hit/bb/so/hbp 를 집계.
+    """
+    stats = {"home": {}, "away": {}}
+
+    def get_stats(side, pcode):
+        if pcode not in stats[side]:
+            stats[side][pcode] = dict(pa=0, ab=0, hit=0, bb=0, so=0, hbp=0)
+        return stats[side][pcode]
 
     for inn in inning_data:
         for half in inn:
             side = "away" if str(half.get("homeOrAway")) == "0" else "home"
-            for t in half.get("textOptions", []) or []:
-                br = t.get("batterRecord") or {}
-                pcode = br.get("pcode")
-                if not pcode:
-                    continue
-                stats = team_stats[side][pcode]
-                for f in fields:
-                    v = br.get(f)
-                    if isinstance(v, (int, float)):
-                        if v > stats[f]:
-                            stats[f] = int(v)
 
-    return {
-        side: {p: dict(st) for p, st in players.items()}
-        for side, players in team_stats.items()
-    }
+            for t in half.get("textOptions") or []:
+                if t.get("type") not in (13, 23):
+                    continue
+
+                cgs = t.get("currentGameState") or {}
+                batter = cgs.get("batter")
+                if not batter:
+                    continue
+
+                text = t.get("text") or ""
+                c = classify_pa_text(text)
+                s = get_stats(side, batter)
+
+                for k in ["pa", "ab", "hit", "bb", "so", "hbp"]:
+                    s[k] += c[k]
+
+    return stats
 
 
 ##############################
@@ -336,19 +387,23 @@ def check_lineup_vs_record_batter(lineup_info, record_bats):
     return issues, warnings
 
 
-def check_inning_vs_record_batter(inning_bats, record_bats):
+def check_relay_vs_record_batter(relay_bats, record_bats):
+    """
+    중계 텍스트 기반으로 집계한 relay_bats vs record_bats 비교.
+    (record_bats: extract_record_batters 결과)
+    """
     issues = []
     warnings = []
 
     for side in ["home", "away"]:
-        inn_codes = set(inning_bats[side].keys())
+        inn_codes = set(relay_bats[side].keys())
         rec_codes = set(record_bats[side].keys())
 
         # 중계에만 있는 타자
         extra_inning = inn_codes - rec_codes
         if extra_inning:
             issues.append(
-                f"[{side}] 중계에는 있는데 기록(batter)에 없는 타자: "
+                f"[{side}] 중계(텍스트)에는 있는데 기록(batter)에 없는 타자: "
                 f"{sorted(extra_inning)}"
             )
 
@@ -367,15 +422,16 @@ def check_inning_vs_record_batter(inning_bats, record_bats):
 
         # 공통 타자의 스탯 비교 (run/sb는 비교X)
         for pcode in sorted(inn_codes & rec_codes):
-            inn = inning_bats[side][pcode]
+            rel = relay_bats[side][pcode]
             rec = record_bats[side][pcode]
-            for f in ["ab", "hit", "bb", "hr", "rbi", "so"]:
-                v_inn = to_int(inn.get(f))
-                v_rec = to_int(rec.get(f))
+            for f_rec, f_rel in [("ab", "ab"), ("hit", "hit"),
+                                 ("bb", "bb"), ("so", "so")]:
+                v_inn = to_int(rel.get(f_rel))
+                v_rec = to_int(rec.get(f_rec))
                 if v_inn != v_rec:
                     issues.append(
-                        f"[{side}] 타자 {pcode} {rec.get('name', '')} {f} 불일치: "
-                        f"inning={v_inn}, record={v_rec}"
+                        f"[{side}] 타자 {pcode} {rec.get('name', '')} {f_rec} 불일치: "
+                        f"relay={v_inn}, record={v_rec}"
                     )
 
     return issues, warnings
@@ -637,7 +693,7 @@ def validate_game_full(game: Dict[str, Any]) -> Dict[str, Any]:
     li = extract_lineup_players(lineup)
     rb = extract_record_batters(record.get("batter", {}))
     rp = extract_record_pitchers(record.get("pitcher", {}))
-    ib = extract_inning_batters(inning_data)
+    relay_bats = build_batter_stats_from_relay(inning_data)
     ip_codes = collect_inning_pitcher_codes(inning_data)
     score = get_final_score_from_inning(inning_data)
     game_info = lineup.get("game_info", {})
@@ -650,7 +706,7 @@ def validate_game_full(game: Dict[str, Any]) -> Dict[str, Any]:
     all_issues += i
     all_warnings += w
 
-    i, w = check_inning_vs_record_batter(ib, rb)
+    i, w = check_relay_vs_record_batter(relay_bats, rb)
     all_issues += i
     all_warnings += w
 
@@ -692,10 +748,8 @@ def validate_game_full(game: Dict[str, Any]) -> Dict[str, Any]:
 ##############################
 
 if __name__ == "__main__":
-    import pathlib
-
     # 단일 파일 테스트
-    json_path = pathlib.Path("games/2025/20250515KTSS02025.json")
+    json_path = Path("games/2025/20250515KTSS02025.json")
 
     with json_path.open(encoding="utf-8") as f:
         game_data = json.load(f)
