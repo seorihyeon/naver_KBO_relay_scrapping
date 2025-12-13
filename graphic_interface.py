@@ -161,7 +161,17 @@ class kbo_naver_scrapper_gui:
                         if valid.get("ok"):
                             self.log(f"{prefix}  기존 데이터 검증 통과: {filename} (스킵)")
                             return True
-                        self.log(f"{prefix}  기존 데이터 이상 발견 → 재수집 진행: {filename}")
+                        issues = valid.get("issues") or []
+                        warnings = valid.get("warnings") or []
+                        details = []
+                        if issues:
+                            details.append("이슈: " + "; ".join(issues))
+                        if warnings:
+                            details.append("경고: " + "; ".join(warnings))
+                        detail_msg = " | ".join(details) if details else "세부 정보 없음"
+                        self.log(
+                            f"{prefix}  기존 데이터 이상 발견 → 재수집 진행: {filename} (상세: {detail_msg})"
+                        )
                     except Exception as ex:
                         self.log(f"{prefix}  기존 데이터 로드/검증 실패({ex}) → 재수집 진행: {filename}")
 
