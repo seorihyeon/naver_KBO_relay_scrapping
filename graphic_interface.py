@@ -382,6 +382,14 @@ class kbo_naver_scrapper_gui:
         self.stop_flag.set()
         self.log("중지 요청됨. 현재 작업이 완료될 때까지 기다려주세요.")
 
+    def open_save_dir_dialog(self):
+        dpg.configure_item("save_dir_dialog", show = True)
+
+    def select_save_dir(self, sender, app_data):
+        selected_dir = app_data.get("file_path_name")
+        if selected_dir:
+            dpg.set_value("save_dir", selected_dir)
+
     # UI 구성
     def build_ui(self):
         dpg.create_context()
@@ -435,7 +443,9 @@ class kbo_naver_scrapper_gui:
             
             with dpg.group(horizontal = True, parent = "main"):
                 dpg.add_text("저장 경로")
-                dpg.add_input_text(tag = "save_dir", width = 460, default_value = 'games')
+                dpg.add_input_text(tag = "save_dir", width = 400, default_value = 'games')
+                dpg.add_button(label = "폴더 선택", width = 80,
+                               tag = "btn_save_dir", callback = lambda: self.open_save_dir_dialog())
 
             with dpg.group(horizontal=True):
                 dpg.add_text("타임아웃(초)")
@@ -458,8 +468,13 @@ class kbo_naver_scrapper_gui:
             "btn_start", "start_date", "end_date", "save_dir",
             "timeout", "retry", "btn_cal_start", "btn_cal_end",
             "btn_today_start", "btn_today_end", "single_date",
-            "btn_cal_single", "btn_today_single", "season_year", "mode"
+            "btn_cal_single", "btn_today_single", "season_year", "mode",
+            "btn_save_dir"
         ]
+
+        with dpg.file_dialog(directory_selector = True, show = False, callback = self.select_save_dir,
+                             tag = "save_dir_dialog", width = 640, height = 480):
+            dpg.add_file_extension(".*")
 
         # 달력 UI 구성
         with dpg.window(tag = "calendar_modal",
