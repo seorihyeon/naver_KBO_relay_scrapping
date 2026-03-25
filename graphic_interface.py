@@ -28,6 +28,11 @@ class kbo_naver_scrapper_gui:
     def log(self, msg):
         self.msg_q.put(msg)
 
+    def debug_log(self, debug_log_path, msg):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(debug_log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {msg}\n")
+
     def message_pump(self):
         try:
             while True:
@@ -136,9 +141,18 @@ class kbo_naver_scrapper_gui:
     def run_scraper(self, mode, start_date, end_date, save_dir, timeout, retry, season_year=None):
         self.stop_flag.clear()
         scr = None
+        debug_log_path = os.path.join(
+            save_dir,
+            f"scrape_debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log",
+        )
 
         try:
             scr = Scrapper(wait = timeout, path = save_dir)
+            self.debug_log(
+                debug_log_path,
+                f"작업 시작 | mode={mode} start={start_date} end={end_date} timeout={timeout} retry={retry} season_year={season_year}",
+            )
+            self.log(f"[디버그] 로그 파일: {debug_log_path}")
 
             def fetch_and_save(url, prefix="", game_date=None):
                 if self.stop_flag.is_set():
@@ -157,9 +171,10 @@ class kbo_naver_scrapper_gui:
                     try:
                         with open(target_path, "r", encoding="utf-8") as f:
                             existing = json.load(f)
-                        valid = check_data.validate_game_full(existing)
+                        valid = check_data.validate_game(existing)
                         if valid.get("ok"):
                             self.log(f"{prefix}  기존 데이터 검증 통과: {filename} (스킵)")
+                            self.debug_log(debug_log_path, f"{filename} | 기존 데이터 검증 통과로 스킵")
                             return True
                         issues = valid.get("issues") or []
                         warnings = valid.get("warnings") or []
@@ -172,30 +187,60 @@ class kbo_naver_scrapper_gui:
                         self.log(
                             f"{prefix}  기존 데이터 이상 발견 → 재수집 진행: {filename} (상세: {detail_msg})"
                         )
+                        self.debug_log(
+                            debug_log_path,
+                            f"{filename} | 기존 데이터 검증 실패로 재수집 | issues={issues} warnings={warnings}",
+                        )
                     except Exception as ex:
                         self.log(f"{prefix}  기존 데이터 로드/검증 실패({ex}) → 재수집 진행: {filename}")
+                        self.debug_log(
+                            debug_log_path,
+                            f"{filename} | 기존 데이터 로드/검증 예외 | {type(ex).__name__}: {ex}",
+                        )
+
+                max_attempts = max(1, int(retry))
+                self.log(f"{prefix}  수집 시작: {filename} (최대 {max_attempts}회)")
+                self.debug_log(debug_log_path, f"{filename} | 페이지 접속 시작 | url={url}")
 
                 ld = {}
-                for _ in range(int(retry)):
+                ind = []
+                rd = {}
+                for attempt in range(1, max_attempts + 1):
                     try:
+                        self.log(f"{prefix}    [{attempt}/{max_attempts}] 페이지 접속 및 데이터 수집 중...")
+                        self.debug_log(debug_log_path, f"{filename} | 시도 {attempt} | 수집 시작")
                         ld, ind, rd = scr.get_game_data(url)
-                        if ld:
-                            break
+                        if not (ld and ind and rd):
+                            raise ValueError("lineup/relay/record 중 일부가 비어 있습니다.")
+
+                        candidate_data = {"lineup": ld, "relay": ind, "record": rd}
+                        validation = check_data.validate_game(candidate_data)
+                        if validation.get("ok"):
+                            with open(target_path, "w", encoding = "utf-8") as f:
+                                json.dump(candidate_data, f, ensure_ascii = False, indent = 4)
+                            self.log(f"{prefix}  검증 통과 및 저장 완료: {filename}")
+                            self.debug_log(debug_log_path, f"{filename} | 시도 {attempt} | 검증 성공 및 저장")
+                            return True
+
+                        issues = validation.get("issues") or []
+                        warnings = validation.get("warnings") or []
+                        self.log(
+                            f"{prefix}    [{attempt}/{max_attempts}] 검증 실패 → 재수집 ({len(issues)}개 이슈)"
+                        )
+                        self.debug_log(
+                            debug_log_path,
+                            f"{filename} | 시도 {attempt} | 검증 실패 | issues={issues} warnings={warnings}",
+                        )
                     except Exception as ex:
-                        self.log(f"{prefix} 재시도 필요: {ex}")
+                        self.log(f"{prefix}    [{attempt}/{max_attempts}] 수집 실패 → 재시도 필요: {ex}")
+                        self.debug_log(
+                            debug_log_path,
+                            f"{filename} | 시도 {attempt} | 예외 발생 | {type(ex).__name__}: {ex}\n{traceback.format_exc()}",
+                        )
 
-                if not ld:
-                    self.log(f"{prefix}  경기 데이터 수집 실패: {url}")
-                    return False
-
-                with open(target_path, "w", encoding = "utf-8") as f:
-                    json.dump({
-                        "lineup": ld,
-                        "relay": ind,
-                        "record": rd
-                    }, f, ensure_ascii = False, indent = 4)
-                self.log(f"{prefix}  경기 데이터 저장 완료: {filename}")
-                return True
+                self.log(f"{prefix}  {max_attempts}회 이상 실패로 건너뜀: {filename}")
+                self.debug_log(debug_log_path, f"{filename} | 최대 시도 실패로 건너뜀")
+                return False
 
             def make_process_day(day_complete, prefix=""):
                 def _process(cur_date, urls):
@@ -293,12 +338,18 @@ class kbo_naver_scrapper_gui:
 
             if self.stop_flag.is_set():
                 self.log("[중지] 작업이 중지되었습니다.")
+                self.debug_log(debug_log_path, "사용자 요청으로 중지됨")
             else:
                 self.log("[완료] 모든 작업이 완료되었습니다.")
+                self.debug_log(debug_log_path, "모든 작업 완료")
                 self.msg_q.put(("progress", 1.0))
 
         except Exception as e:
             self.log("[오류]\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            self.debug_log(
+                debug_log_path,
+                "치명적 오류\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)),
+            )
 
 
         finally:
@@ -450,8 +501,8 @@ class kbo_naver_scrapper_gui:
             with dpg.group(horizontal=True):
                 dpg.add_text("타임아웃(초)")
                 dpg.add_input_int(tag="timeout", width=80, default_value=8, min_value=2, max_value=60)
-                dpg.add_text("재시도")
-                dpg.add_input_int(tag="retry", width=80, default_value=3, min_value=1, max_value=10)
+                dpg.add_text("최대 실패 횟수")
+                dpg.add_input_int(tag="retry", width=120, default_value=3, min_value=1, max_value=20)
 
             with dpg.group(horizontal = True, parent = "main"):
                 dpg.add_button(tag = "btn_start", label = "시작", width = 120, callback = lambda s, a: self.start_scrape())
