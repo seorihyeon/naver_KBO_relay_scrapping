@@ -8,29 +8,12 @@ from typing import Any, Iterable
 import psycopg
 from psycopg.types.json import Json
 
-
-def _first_non_empty(*values: Any) -> Any:
-    for value in values:
-        if value not in (None, "", [], {}):
-            return value
-    return None
-
-
-def _safe_int(value: Any, default: int | None = None) -> int | None:
-    if value in (None, "", "-"):
-        return default
-    try:
-        return int(value)
-    except Exception:
-        try:
-            return int(float(str(value)))
-        except Exception:
-            return default
+from common_utils import first_non_empty, to_int
 
 
 def _extract_game_meta(lineup: dict[str, Any]) -> dict[str, Any]:
     info = lineup.get("game_info") or {}
-    raw_date = _first_non_empty(info.get("gdate"), info.get("gameDate"), info.get("date"))
+    raw_date = first_non_empty(info.get("gdate"), info.get("gameDate"), info.get("date"))
     parsed_date = None
     if raw_date:
         try:
@@ -39,11 +22,11 @@ def _extract_game_meta(lineup: dict[str, Any]) -> dict[str, Any]:
             parsed_date = None
     return {
         "game_date": parsed_date,
-        "stadium": _first_non_empty(info.get("stadium"), info.get("stadiumName")),
-        "home_team_code": _first_non_empty(info.get("hCode"), info.get("homeTeamCode"), info.get("hcode")),
-        "away_team_code": _first_non_empty(info.get("aCode"), info.get("awayTeamCode"), info.get("acode")),
-        "home_team_name": _first_non_empty(info.get("hName"), info.get("homeTeamName"), info.get("hFullName")),
-        "away_team_name": _first_non_empty(info.get("aName"), info.get("awayTeamName"), info.get("aFullName")),
+        "stadium": first_non_empty(info.get("stadium"), info.get("stadiumName")),
+        "home_team_code": first_non_empty(info.get("hCode"), info.get("homeTeamCode"), info.get("hcode")),
+        "away_team_code": first_non_empty(info.get("aCode"), info.get("awayTeamCode"), info.get("acode")),
+        "home_team_name": first_non_empty(info.get("hName"), info.get("homeTeamName"), info.get("hFullName")),
+        "away_team_name": first_non_empty(info.get("aName"), info.get("awayTeamName"), info.get("aFullName")),
     }
 
 
@@ -54,14 +37,14 @@ def _iter_players(game: dict[str, Any]) -> Iterable[dict[str, Any]]:
     for side in ("home", "away"):
         for section in ("starter", "bullpen", "candidate"):
             for row in lineup.get(f"{side}_{section}") or []:
-                player_id = str(_first_non_empty(row.get("playerCode"), row.get("pcode"), row.get("playerId")) or "")
+                player_id = str(first_non_empty(row.get("playerCode"), row.get("pcode"), row.get("playerId")) or "")
                 if not player_id:
                     continue
                 yield {
                     "player_id": player_id,
-                    "name": _first_non_empty(row.get("playerName"), row.get("name"), "UNKNOWN"),
-                    "throws": _first_non_empty(row.get("throwBat"), row.get("throws")),
-                    "bats": _first_non_empty(row.get("hitType"), row.get("bats")),
+                    "name": first_non_empty(row.get("playerName"), row.get("name"), "UNKNOWN"),
+                    "throws": first_non_empty(row.get("throwBat"), row.get("throws")),
+                    "bats": first_non_empty(row.get("hitType"), row.get("bats")),
                     "raw": row,
                 }
 
@@ -69,20 +52,20 @@ def _iter_players(game: dict[str, Any]) -> Iterable[dict[str, Any]]:
         boxscore = record.get(section) or {}
         for side in ("home", "away"):
             for row in boxscore.get(side) or []:
-                player_id = str(_first_non_empty(row.get(key), row.get("playerCode"), row.get("pcode")) or "")
+                player_id = str(first_non_empty(row.get(key), row.get("playerCode"), row.get("pcode")) or "")
                 if not player_id:
                     continue
                 yield {
                     "player_id": player_id,
-                    "name": _first_non_empty(row.get("name"), row.get("playerName"), "UNKNOWN"),
-                    "throws": _first_non_empty(row.get("hitType"), row.get("throws")),
-                    "bats": _first_non_empty(row.get("hitType"), row.get("bats")),
+                    "name": first_non_empty(row.get("name"), row.get("playerName"), "UNKNOWN"),
+                    "throws": first_non_empty(row.get("hitType"), row.get("throws")),
+                    "bats": first_non_empty(row.get("hitType"), row.get("bats")),
                     "raw": row,
                 }
 
 
 def _map_event_type(type_code: Any, text: str) -> tuple[str, str | None]:
-    code = _safe_int(type_code, -1)
+    code = to_int(type_code, -1)
     txt = text or ""
 
     if code in (1, 2, 3):
@@ -130,7 +113,7 @@ def _extract_events(relay: list[Any]) -> list[EventRow]:
         for half_block in inning_block or []:
             home_or_away = str(half_block.get("homeOrAway", ""))
             half = "T" if home_or_away == "0" else "B"
-            inning_no = _safe_int(_first_non_empty(half_block.get("inning"), half_block.get("inn")), inning_idx)
+            inning_no = to_int(first_non_empty(half_block.get("inning"), half_block.get("inn")), inning_idx)
 
             for item in half_block.get("textOptions") or []:
                 state = item.get("currentGameState") or {}
@@ -148,11 +131,15 @@ def _extract_events(relay: list[Any]) -> list[EventRow]:
                         raw=item,
                         batter_id=str(state.get("batter")) if state.get("batter") else None,
                         pitcher_id=str(state.get("pitcher")) if state.get("pitcher") else None,
-                        outs_before=_safe_int(_first_non_empty(state.get("outCount"), state.get("outs"))),
-                        balls_before=_safe_int(_first_non_empty(state.get("ballCount"), state.get("balls"))),
-                        strikes_before=_safe_int(_first_non_empty(state.get("strikeCount"), state.get("strikes"))),
-                        score_home_before=_safe_int(_first_non_empty(state.get("homeTeamScore"), state.get("homeScore"))),
-                        score_away_before=_safe_int(_first_non_empty(state.get("awayTeamScore"), state.get("awayScore"))),
+                        outs_before=to_int(first_non_empty(state.get("outCount"), state.get("outs")), None),
+                        balls_before=to_int(first_non_empty(state.get("ballCount"), state.get("balls")), None),
+                        strikes_before=to_int(first_non_empty(state.get("strikeCount"), state.get("strikes")), None),
+                        score_home_before=to_int(
+                            first_non_empty(state.get("homeTeamScore"), state.get("homeScore")), None
+                        ),
+                        score_away_before=to_int(
+                            first_non_empty(state.get("awayTeamScore"), state.get("awayScore")), None
+                        ),
                     )
                 )
                 seq_no += 1

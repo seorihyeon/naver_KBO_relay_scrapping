@@ -1,23 +1,31 @@
-import datetime, json, time, os, re
+import datetime
+import json
+import os
 from seleniumwire import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
-from selenium.common.exceptions import StaleElementReferenceException
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
 
 # Selenium을 이용해 스크래핑을 수행하는 클래스
 class Scrapper:
-    def __init__(self, wait = 10, path = 'games'):
+    def __init__(self, wait=10, path="games"):
         edge_options = EdgeOptions()
         edge_options.add_argument("--no-sandbox")
         edge_options.add_argument("--headless=new")
         edge_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                                   'AppleWebKit/537.36 (KHTML, like Gecko) '
                                   'Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0')
-        sw_options = {'exclude_hosts': ['mtalk.google.com', 'fcm.googleapis.com', 'clients.google.com', 'clients2.google.com']}
+        sw_options = {
+            "exclude_hosts": [
+                "mtalk.google.com",
+                "fcm.googleapis.com",
+                "clients.google.com",
+                "clients2.google.com",
+            ]
+        }
         self.driver = webdriver.Edge(options=edge_options, seleniumwire_options=sw_options)
 
         self.driver.implicitly_wait(wait)
@@ -38,8 +46,12 @@ class Scrapper:
         ActionChains(self.driver).move_to_element(button).click(button).perform()
 
     # CSS_SELECTOR로 요소 찾기
-    def find_element_CSSS(self, parent, query):
+    def find_element_css(self, parent, query):
         return parent.find_element(By.CSS_SELECTOR, query)
+
+    # backward compatibility
+    def find_element_CSSS(self, parent, query):
+        return self.find_element_css(parent, query)
     
     # 대기용 함수
     def wait_present(self, css, timeout = None, root = None, min_count = 1, visible = True, fresh = True):
@@ -138,13 +150,13 @@ class Scrapper:
         
         for _ in range(retry):
             try:
-                tab_list = self.find_element_CSSS(self.driver, tab_css)
+                tab_list = self.find_element_css(self.driver, tab_css)
                 tab_buttons = tab_list.find_elements(By.CSS_SELECTOR, 'button')
         
                 tab_button_dict = dict()
                 
                 for btn in tab_buttons:
-                    text = self.find_element_CSSS(btn, 'span[class^="GameTab_text"]').text
+                    text = self.find_element_css(btn, 'span[class^="GameTab_text"]').text
                     tab_button_dict[text] = btn
                 
                 if tab_button_dict:
@@ -155,9 +167,9 @@ class Scrapper:
 
     # 중계 페이지 내에서 이닝 버튼 찾기
     def find_inning_button(self):
-        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_main_section"]')
-        game_panel = self.find_element_CSSS(main_section, 'section[class^="Home_game_panel"]')
-        tab_list = self.find_element_CSSS(game_panel, 'div[class^="SetTab_tab_list"]')
+        main_section = self.find_element_css(self.driver, 'div[class^="Home_main_section"]')
+        game_panel = self.find_element_css(main_section, 'section[class^="Home_game_panel"]')
+        tab_list = self.find_element_css(game_panel, 'div[class^="SetTab_tab_list"]')
         inning_buttons = tab_list.find_elements(By.CSS_SELECTOR, 'button')
 
         inning_buttons[:] = [btn for btn in inning_buttons if btn.is_enabled()]
@@ -245,7 +257,7 @@ class Scrapper:
         self.wait_present('div[class^="CalendarDate_calendar_tab_wrap"]')
 
         css_tree = 'div[class^="Home_container"] div[class^="CalendarDate_schedule_date_area"] div[class^="CalendarDate_calendar_tab_wrap"]'
-        date_tab = self.find_element_CSSS(self.driver, css_tree)
+        date_tab = self.find_element_css(self.driver, css_tree)
         date_buttons_em = date_tab.find_elements(By.CSS_SELECTOR, 'button:not([disabled]) em')
 
         activated_dates = []
@@ -292,12 +304,12 @@ class Scrapper:
         except TimeoutException:
             # 경기 없음 or 무한 로딩 -> 건너뜀
             return []
-        main_section = self.find_element_CSSS(self.driver, 'div[class^="Home_container"]')
+        main_section = self.find_element_css(self.driver, 'div[class^="Home_container"]')
         match_group = main_section.find_elements(By.CSS_SELECTOR, 'div[class^="ScheduleAllType_match_list_group"]')
 
         for grp in match_group:
-            a = self.find_element_CSSS(grp, 'div[class^="ScheduleAllType_title_area"]')
-            em = self.find_element_CSSS(a, 'em')
+            a = self.find_element_css(grp, 'div[class^="ScheduleAllType_title_area"]')
+            em = self.find_element_css(a, "em")
             if em.text == "KBO리그":
                 target_group = grp
                 break
@@ -310,16 +322,16 @@ class Scrapper:
         match_urls = []    
         matches = target_group.find_elements(By.CSS_SELECTOR, 'li[class^="MatchBox_match_item"]')
         for match in matches:
-            match_status = self.find_element_CSSS(match, 'em[class^=MatchBox_status]')
+            match_status = self.find_element_css(match, "em[class^=MatchBox_status]")
             if match_status.text == "종료":
-                match_urls.append(self.find_element_CSSS(match, 'a[class^="MatchBox_link"]').get_attribute('href'))
+                match_urls.append(self.find_element_css(match, 'a[class^="MatchBox_link"]').get_attribute("href"))
 
         return match_urls
     
     # 다음 달로 이동
     def goto_next_month(self):
         self.wait_present('button[class^="CalendarDate_button_next"]')
-        next_button = self.find_element_CSSS(self.driver, 'button[class^="CalendarDate_button_next"]')
+        next_button = self.find_element_css(self.driver, 'button[class^="CalendarDate_button_next"]')
 
         self.click(next_button)
 
@@ -327,7 +339,7 @@ class Scrapper:
 
     def get_current_month(self):
         self.wait_present('time[class^="CalendarDate_current_date"]')
-        current = self.find_element_CSSS(self.driver, 'time[class^="CalendarDate_current_date"]')
+        current = self.find_element_css(self.driver, 'time[class^="CalendarDate_current_date"]')
 
         month = current.get_attribute('datetime').split('-')[1]
         return int(month)
