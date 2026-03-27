@@ -1,10 +1,18 @@
-import os, json, threading, datetime, queue, traceback, calendar
+import calendar
+import datetime
+import json
+import os
+import queue
+import threading
+import traceback
+
 import dearpygui.dearpygui as dpg
-from selenium.common.exceptions import TimeoutException
+
 from web_interface import Scrapper
 import check_data
 
-class kbo_naver_scrapper_gui:
+
+class KboNaverScrapperGUI:
     def __init__(self):
         # 공통 상태
         self.msg_q = queue.Queue()
@@ -564,6 +572,10 @@ class kbo_naver_scrapper_gui:
     def run(self):
         self.build_ui()
 
+
+kbo_naver_scrapper_gui = KboNaverScrapperGUI
+
+
 if __name__ == "__main__":
-    gui = kbo_naver_scrapper_gui()
+    gui = KboNaverScrapperGUI()
     gui.run()

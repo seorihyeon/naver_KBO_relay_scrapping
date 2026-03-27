@@ -5,18 +5,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-
-def to_int(value: Any, default: int = 0) -> int:
-    """숫자/문자 섞인 값을 안전하게 int로 변환."""
-    try:
-        if value in (None, "", "-", " "):
-            return default
-        return int(value)
-    except Exception:
-        try:
-            return int(float(str(value)))
-        except Exception:
-            return default
+from common_utils import to_int
 
 
 def ip_str_to_outs(ip: Any) -> int:
