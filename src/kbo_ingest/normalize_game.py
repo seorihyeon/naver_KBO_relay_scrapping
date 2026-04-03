@@ -187,7 +187,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_event_no = 0
         event_id_by_pitch_id: dict[str, int] = {}
 
-        for ev in events:
+        for event_seq_game, ev in enumerate(events, start = 1):
             inning_no = ev.inning_no or 0
             half = ev.half or "top"
             in_key = (inning_no, half)
@@ -257,7 +257,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     game_id,
                     inning_id,
                     current_pa_id,
-                    ev.seqno,
+                    event_seq_game,
                     current_pa_event_no,
                     ev.type_code,
                     ev.category,
