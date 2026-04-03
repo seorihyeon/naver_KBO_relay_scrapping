@@ -1,6 +1,6 @@
-# naver_KBO_relay_scrapping
+# naver_KBO_relay_scraping
 
-Scrap KBO relay from Naver with Selenium.
+Scrape KBO relay data from Naver with Selenium.
 
 ## PostgreSQL 적재 스크립트
 
