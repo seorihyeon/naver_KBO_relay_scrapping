@@ -46,10 +46,10 @@ class ReplayDPGQA:
         self.is_syncing_event_slider = False
         self.current_image_path = "assets/stadium.png"
         self.overlay_positions_base = {
-            "bases": {1: (585, 250), 2: (500, 170), 3: (415, 250)},
-            "outs": [(60, 60), (100, 60), (140, 60)],
-            "balls": [(60, 320), (100, 320), (140, 320), (180, 320)],
-            "strikes": [(60, 350), (100, 350), (140, 350)],
+            "bases": {1: (390, 246), 2: (338, 205), 3: (286, 246)},
+            "outs": [(42, 42), (72, 42), (102, 42)],
+            "balls": [(44, 308), (74, 308), (104, 308), (134, 308)],
+            "strikes": [(44, 334), (74, 334), (104, 334)],
             "score": {
                 "away_label": (610, 25),
                 "away_value": (690, 25),
@@ -260,6 +260,38 @@ class ReplayDPGQA:
             return None
         return self.events[self.event_idx][0]
 
+    def find_event_index_by_event_id(self, event_id):
+        for idx, ev in enumerate(self.events):
+            if ev[0] == event_id:
+                return idx
+        return None
+
+    def get_resolved_game_state(self, event_idx):
+        outs = balls = strikes = home_score = away_score = None
+
+        for i in range(event_idx, -1, -1):
+            ev = self.events[i]
+            if outs is None:
+                outs = self.safe_int(ev[8])
+            if balls is None:
+                balls = self.safe_int(ev[9])
+            if strikes is None:
+                strikes = self.safe_int(ev[10])
+            if home_score is None:
+                home_score = self.safe_int(ev[14])
+            if away_score is None:
+                away_score = self.safe_int(ev[15])
+            if all(v is not None for v in [outs, balls, strikes, home_score, away_score]):
+                break
+
+        return {
+            "outs": outs if outs is not None else 0,
+            "balls": balls if balls is not None else 0,
+            "strikes": strikes if strikes is not None else 0,
+            "home_score": home_score if home_score is not None else 0,
+            "away_score": away_score if away_score is not None else 0,
+        }
+
     def compute_overlay_positions(self, image_w, image_h):
         sx = image_w / self.BASE_IMAGE_W
         sy = image_h / self.BASE_IMAGE_H
@@ -402,9 +434,12 @@ class ReplayDPGQA:
             return
 
         e = self.events[self.event_idx]
+        state = self.get_resolved_game_state(self.event_idx)
         half_txt = "초" if e[3] == "top" else "말"
         base_txt = f"{'1' if e[11] else '-'}{'2' if e[12] else '-'}{'3' if e[13] else '-'}"
-        runner_txt = f"1루:{e[16] or '-'} / 2루:{e[17] or '-'} / 3루:{e[18] or '-'}"
+        runner_1 = (e[16] if len(e) > 16 else None) or "-"
+        runner_2 = (e[17] if len(e) > 17 else None) or "-"
+        runner_3 = (e[18] if len(e) > 18 else None) or "-"
 
         progress_header = (
             f"진행률 {self.event_idx + 1} / {len(self.events)} | "
@@ -412,13 +447,12 @@ class ReplayDPGQA:
         )
         msg = (
             f"{progress_header}\n"
-            f"[이벤트 {self.event_idx+1}/{len(self.events)}]\n"
-            f"event_id={e[0]}, seq={e[1]}, pa_id={e[4]}, seq_in_pa={e[5]}\n"
-            f"{e[2]}회{half_txt} | category={e[6]}\n"
-            f"count {e[9]}-{e[10]} | outs={e[8]} | base={base_txt}\n"
-            f"HOME {e[14]} : AWAY {e[15]}\n"
-            f"주자 {runner_txt}\n\n"
-            f"{e[7] or '(텍스트 없음)'}"
+            f"[이벤트 #{self.event_idx + 1}] id={e[0]} / seq={e[1]} / seq_in_pa={e[5]}\n"
+            f"이닝: {e[2]}회 {half_txt} | category={e[6]} | pa_id={e[4]}\n"
+            f"카운트: {state['balls']}B-{state['strikes']}S | 아웃: {state['outs']} | 주자상태: {base_txt}\n"
+            f"스코어: HOME {state['home_score']} : AWAY {state['away_score']}\n"
+            f"주자: 1루({runner_1}), 2루({runner_2}), 3루({runner_3})\n"
+            f"중계: {e[7] or '(텍스트 없음)'}"
         )
         self.set_status(f"이벤트 포커스 | game_id={self.game_id}")
         dpg.set_value("relay_text", msg)
@@ -432,10 +466,9 @@ class ReplayDPGQA:
 
         # 이벤트에 연관된 투구 하이라이트 갱신
         self.refresh_pitch_table(highlight_event_id=e[0])
-        self.update_field_overlay(e)
+        self.update_field_overlay(e, state)
 
-
-    def update_field_overlay(self, event):
+    def update_field_overlay(self, event, state=None):
         if not dpg.does_item_exist(self.overlay_drawlist_tag):
             return
 
@@ -448,11 +481,13 @@ class ReplayDPGQA:
             tag=self.background_draw_tag,
         )
 
-        event_outs = self.safe_int(event[8]) or 0
-        event_balls = self.safe_int(event[9]) or 0
-        event_strikes = self.safe_int(event[10]) or 0
-        home_score = self.safe_int(event[14])
-        away_score = self.safe_int(event[15])
+        if state is None:
+            state = self.get_resolved_game_state(self.event_idx)
+        event_outs = state["outs"]
+        event_balls = state["balls"]
+        event_strikes = state["strikes"]
+        home_score = state["home_score"]
+        away_score = state["away_score"]
 
         # 1/2/3루 점유
         base_map = {
@@ -469,11 +504,14 @@ class ReplayDPGQA:
                           color=(0, 0, 0, 255), size=14, parent=self.overlay_drawlist_tag)
             if occupied:
                 name_text = str(runner_name).strip() if runner_name else "주자"
-                dpg.draw_text((center[0] + 16, center[1] - 10), name_text,
+                dpg.draw_text((center[0] + 14, center[1] - 24), f"{base_no}루:{name_text}",
                               color=(255, 255, 255, 255), size=14, parent=self.overlay_drawlist_tag)
 
         # 아웃 카운트(0~2)
-        dpg.draw_text((20, 48), "OUT", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
+        outs_pos = self.overlay_positions["outs"]
+        balls_pos = self.overlay_positions["balls"]
+        strikes_pos = self.overlay_positions["strikes"]
+        dpg.draw_text((outs_pos[0][0] - 28, outs_pos[0][1] - 12), "OUT", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
         for i, pos in enumerate(self.overlay_positions["outs"]):
             is_on = i < min(event_outs, 2)
             fill = (255, 80, 80, 235) if is_on else (70, 70, 70, 130)
@@ -481,15 +519,15 @@ class ReplayDPGQA:
                             fill=fill, thickness=2, parent=self.overlay_drawlist_tag)
 
         # 볼/스트라이크
-        dpg.draw_text((20, 308), "B", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
-        for i, pos in enumerate(self.overlay_positions["balls"]):
+        dpg.draw_text((balls_pos[0][0] - 20, balls_pos[0][1] - 10), "B", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
+        for i, pos in enumerate(balls_pos):
             is_on = i < min(event_balls, 4)
             fill = (255, 210, 70, 235) if is_on else (70, 70, 70, 130)
             dpg.draw_circle(center=pos, radius=9, color=(255, 255, 255, 255),
                             fill=fill, thickness=2, parent=self.overlay_drawlist_tag)
 
-        dpg.draw_text((20, 338), "S", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
-        for i, pos in enumerate(self.overlay_positions["strikes"]):
+        dpg.draw_text((strikes_pos[0][0] - 20, strikes_pos[0][1] - 10), "S", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
+        for i, pos in enumerate(strikes_pos):
             is_on = i < min(event_strikes, 3)
             fill = (80, 170, 255, 235) if is_on else (70, 70, 70, 130)
             dpg.draw_circle(center=pos, radius=9, color=(255, 255, 255, 255),
@@ -529,21 +567,54 @@ class ReplayDPGQA:
 
     # ---------------- Navigation ----------------
     def move(self, kind, delta):
-        if kind == "event" and self.events:
+        if not self.events:
+            return
+
+        if kind == "event":
             self.event_idx = max(0, min(len(self.events) - 1, self.event_idx + delta))
             self.render_event()
-        elif kind == "pitch" and self.pitches:
-            self.pitch_idx = max(0, min(len(self.pitches) - 1, self.pitch_idx + delta))
-            p = self.pitches[self.pitch_idx]
-            dpg.set_value("relay_text", f"[투구 {self.pitch_idx+1}/{len(self.pitches)}]\n{p}")
-        elif kind == "pa" and self.pas:
-            self.pa_idx = max(0, min(len(self.pas) - 1, self.pa_idx + delta))
-            pa = self.pas[self.pa_idx]
-            dpg.set_value("relay_text", f"[타석 {self.pa_idx+1}/{len(self.pas)}]\n{pa}")
-        elif kind == "inning" and self.innings:
-            self.inning_idx = max(0, min(len(self.innings) - 1, self.inning_idx + delta))
-            inn = self.innings[self.inning_idx]
-            dpg.set_value("relay_text", f"[이닝 {self.inning_idx+1}/{len(self.innings)}]\n{inn}")
+            return
+
+        target_indices = []
+        if kind == "pitch":
+            seen_event_ids = set()
+            for p in self.pitches:
+                event_id = p[1]
+                if event_id is None or event_id in seen_event_ids:
+                    continue
+                idx = self.find_event_index_by_event_id(event_id)
+                if idx is not None:
+                    target_indices.append(idx)
+                    seen_event_ids.add(event_id)
+        elif kind == "pa":
+            seen_pa_ids = set()
+            for ev_idx, ev in enumerate(self.events):
+                pa_id = ev[4]
+                if pa_id is None or pa_id in seen_pa_ids:
+                    continue
+                target_indices.append(ev_idx)
+                seen_pa_ids.add(pa_id)
+        elif kind == "inning":
+            seen_innings = set()
+            for ev_idx, ev in enumerate(self.events):
+                key = (ev[2], ev[3])
+                if key in seen_innings:
+                    continue
+                target_indices.append(ev_idx)
+                seen_innings.add(key)
+
+        if not target_indices:
+            return
+
+        current = self.event_idx
+        if delta < 0:
+            prev_candidates = [idx for idx in target_indices if idx < current]
+            self.event_idx = prev_candidates[-1] if prev_candidates else target_indices[0]
+        else:
+            next_candidates = [idx for idx in target_indices if idx > current]
+            self.event_idx = next_candidates[0] if next_candidates else target_indices[-1]
+
+        self.render_event()
 
     # ---------------- Graphics ----------------
     def create_placeholder_texture(self, w=780, h=360):
@@ -639,7 +710,7 @@ class ReplayDPGQA:
             dpg.configure_item("warning_table", height=dims["warning_h"])
 
         if self.events:
-            self.update_field_overlay(self.events[self.event_idx])
+            self.update_field_overlay(self.events[self.event_idx], self.get_resolved_game_state(self.event_idx))
 
     def on_viewport_resize(self, sender=None, app_data=None):
         if dpg.does_item_exist("main_window"):
@@ -702,6 +773,7 @@ class ReplayDPGQA:
                 # 우측: 투구 하이라이트 + 경고패널
                 with dpg.child_window(tag="right_panel", width=550, height=600, border=True):
                     dpg.add_text("연관 투구 자동 하이라이트 (현재 event_id 기준)")
+                    dpg.add_text("※ 현재 이벤트(event_id)와 연결된 투구 행을 노란색으로 강조 표시합니다.", color=(170, 170, 170))
                     with dpg.table(header_row=False, tag="pitch_table",
                                    policy=dpg.mvTable_SizingStretchProp,
                                    row_background=True, borders_innerH=True, borders_outerH=True,
