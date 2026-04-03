@@ -2,28 +2,9 @@ from __future__ import annotations
 
 import dearpygui.dearpygui as dpg
 import psycopg
-import os
 from pathlib import Path
-from PIL import Image
 
-def setup_korean_font():
-    candidates = [
-        r"fonts/NanumGothic.otf",
-        r"fonts/NanumGothic.ttf"
-    ]
-
-    font_path = next((p for p in candidates if os.path.exists(p)), None)
-    if not font_path:
-        print("[WARN] 한글 폰트를 찾지 못했습니다.")
-        return None
-
-    with dpg.font_registry():
-        with dpg.font(font_path, 16) as korean_font:
-            dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
-            dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
-    
-    dpg.bind_font(korean_font)
-    return korean_font
+from dpg_utils import bind_korean_font, create_or_replace_dynamic_texture, load_image_pixels
 
 class ReplayDPGQA:
     def __init__(self):
@@ -44,18 +25,67 @@ class ReplayDPGQA:
         self.pitch_row_tags = []
         self.warning_rows = []
 
+        # ---- Layout constants ----
+        self.DEFAULT_VIEWPORT_W = 1440
+        self.DEFAULT_VIEWPORT_H = 940
+        self.LEFT_PANEL_RATIO = 0.60
+        self.RIGHT_PANEL_RATIO = 0.40
+        self.PANEL_MIN_WIDTH = 420
+        self.PANEL_HEIGHT_OFFSET = 160
+        self.GRAPHICS_HEIGHT_RATIO = 0.46
+        self.RELAY_HEIGHT_RATIO = 0.32
+        self.PITCH_TABLE_HEIGHT_RATIO = 0.42
+        self.WARNING_TABLE_HEIGHT_RATIO = 0.50
+        self.BASE_IMAGE_W = 780
+        self.BASE_IMAGE_H = 360
+
         self.tex_tag = "stadium_tex"
+        self.pa_event_columns = None
+        self.overlay_drawlist_tag = "stadium_overlay_drawlist"
+        self.is_syncing_event_slider = False
+        self.current_image_path = "assets/stadium.png"
+        self.overlay_positions_base = {
+            "bases": {1: (585, 250), 2: (500, 170), 3: (415, 250)},
+            "outs": [(60, 60), (100, 60), (140, 60)],
+            "balls": [(60, 320), (100, 320), (140, 320), (180, 320)],
+            "strikes": [(60, 350), (100, 350), (140, 350)],
+            "score": {
+                "away_label": (610, 25),
+                "away_value": (690, 25),
+                "home_label": (610, 55),
+                "home_value": (690, 55),
+            },
+        }
+        self.overlay_positions = self.overlay_positions_base.copy()
+        self.status_logs = []
+
+    def set_status(self, summary, detail=None, append=False):
+        if dpg.does_item_exist("status_text"):
+            dpg.set_value("status_text", summary)
+
+        if detail is None or not dpg.does_item_exist("status_detail_text"):
+            return
+
+        if append:
+            self.status_logs.append(detail)
+        else:
+            self.status_logs = [detail]
+
+        dpg.set_value("status_detail_text", "\n".join(self.status_logs))
 
     # ---------------- DB ----------------
     def connect_db(self):
         dsn = dpg.get_value("dsn_input").strip()
+        self.set_status("DB 연결 중...", "DSN 확인 및 DB 연결을 시도합니다.")
         try:
             self.conn = psycopg.connect(dsn)
             self.conn.autocommit = True
+            self.set_status("DB 연결 성공", "DB 연결 완료. 게임 목록을 불러옵니다.", append=True)
             self.load_games()
-            dpg.set_value("status_text", "DB 연결 성공")
+            self.set_status("DB 연결 및 게임 목록 로드 완료", "연결/초기 로딩 단계 완료.", append=True)
         except Exception as e:
-            dpg.set_value("status_text", f"DB 연결 실패: {e}")
+            self.set_status("DB 연결 실패", "사용자 메시지: DSN/네트워크/DB 상태를 확인하세요.", append=False)
+            self.set_status("DB 연결 실패", f"디버그 예외: {e}", append=True)
 
     def load_games(self):
         q = """
@@ -77,35 +107,96 @@ class ReplayDPGQA:
         dpg.configure_item("game_combo", items=labels)
         if labels:
             dpg.set_value("game_combo", labels[0])
+            selected_game_id = self.games[0][0]
+            self.set_status(
+                f"게임 목록 로드 완료 ({len(labels)}건)",
+                f"현재 선택 game_id={selected_game_id}",
+                append=True
+            )
+        else:
+            self.set_status("게임 목록 로드 완료 (0건)", "표시 가능한 게임이 없습니다.", append=True)
 
     def load_selected_game(self):
         if not self.conn:
-            dpg.set_value("status_text", "먼저 DB 연결하세요.")
+            self.set_status("게임 로드 실패", "사용자 메시지: 먼저 DB 연결을 진행하세요.")
             return
 
         sel = dpg.get_value("game_combo")
         hit = [g for g in self.games if g[1] == sel]
         if not hit:
-            dpg.set_value("status_text", "게임 선택이 올바르지 않습니다.")
+            self.set_status("게임 로드 실패", "사용자 메시지: 게임 선택 값이 유효하지 않습니다.")
             return
 
         self.game_id = hit[0][0]
-        self.events = self.fetch_events(self.game_id)
-        self.pitches = self.fetch_pitches(self.game_id)
-        self.pas = self.fetch_pas(self.game_id)
-        self.innings = self.fetch_innings(self.game_id)
+        self.set_status(
+            f"게임 로드 중... (game_id={self.game_id})",
+            f"선택 게임 로드 시작: game_id={self.game_id}",
+            append=False
+        )
+        try:
+            self.events = self.fetch_events(self.game_id)
+            self.set_status("게임 로드 중...", f"이벤트 로드 완료: {len(self.events)}건", append=True)
 
-        self.event_idx = self.pitch_idx = self.pa_idx = self.inning_idx = 0
-        self.render_event()
-        self.refresh_pitch_table(highlight_event_id=self.current_event_id())
-        self.refresh_warning_panel()
+            self.pitches = self.fetch_pitches(self.game_id)
+            self.set_status("게임 로드 중...", f"투구 로드 완료: {len(self.pitches)}건", append=True)
+
+            self.pas = self.fetch_pas(self.game_id)
+            self.set_status("게임 로드 중...", f"타석 로드 완료: {len(self.pas)}건", append=True)
+
+            self.innings = self.fetch_innings(self.game_id)
+            self.set_status("게임 로드 중...", f"이닝 로드 완료: {len(self.innings)}건", append=True)
+
+            self.event_idx = self.pitch_idx = self.pa_idx = self.inning_idx = 0
+
+            event_max = max(0, len(self.events) - 1)
+            dpg.configure_item("event_slider", min_value=0, max_value=event_max, enabled=bool(self.events))
+            self.is_syncing_event_slider = True
+            dpg.set_value("event_slider", 0)
+            dpg.set_value("event_jump_input", 0)
+            self.is_syncing_event_slider = False
+
+            self.render_event()
+            self.refresh_pitch_table(highlight_event_id=self.current_event_id())
+            self.refresh_warning_panel()
+            self.set_status(
+                f"게임 로드 완료 (game_id={self.game_id})",
+                "이벤트/투구/타석/이닝 데이터 로드 및 초기 렌더링이 완료되었습니다.",
+                append=True
+            )
+        except Exception as e:
+            self.set_status("게임 로드 실패", "사용자 메시지: 데이터를 불러오는 중 오류가 발생했습니다.", append=False)
+            self.set_status("게임 로드 실패", f"디버그 예외: {e}", append=True)
+
+    def get_pa_event_columns(self):
+        if self.pa_event_columns is not None:
+            return self.pa_event_columns
+
+        q = """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'pa_events'
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(q)
+            self.pa_event_columns = {row[0] for row in cur.fetchall()}
+
+        return self.pa_event_columns
 
     def fetch_events(self, game_id):
-        q = """
+        cols = self.get_pa_event_columns()
+
+        b1_name_expr = "e.base1_runner_name" if "base1_runner_name" in cols else "NULL"
+        b2_name_expr = "e.base2_runner_name" if "base2_runner_name" in cols else "NULL"
+        b3_name_expr = "e.base3_runner_name" if "base3_runner_name" in cols else "NULL"
+
+        q = f"""
         SELECT e.event_id, e.event_seq_game, i.inning_no, i.half, e.pa_id, e.event_seq_in_pa,
                e.event_category, e.text, e.outs, e.balls, e.strikes,
                e.base1_occupied, e.base2_occupied, e.base3_occupied,
-               e.home_score, e.away_score
+               e.home_score, e.away_score,
+               {b1_name_expr} AS base1_runner_name,
+               {b2_name_expr} AS base2_runner_name,
+               {b3_name_expr} AS base3_runner_name
         FROM pa_events e
         LEFT JOIN innings i ON i.inning_id = e.inning_id
         WHERE e.game_id = %s
@@ -165,6 +256,48 @@ class ReplayDPGQA:
             return None
         return self.events[self.event_idx][0]
 
+    def compute_overlay_positions(self, image_w, image_h):
+        sx = image_w / self.BASE_IMAGE_W
+        sy = image_h / self.BASE_IMAGE_H
+
+        def scale_xy(xy):
+            return (int(xy[0] * sx), int(xy[1] * sy))
+
+        return {
+            "bases": {k: scale_xy(v) for k, v in self.overlay_positions_base["bases"].items()},
+            "outs": [scale_xy(v) for v in self.overlay_positions_base["outs"]],
+            "balls": [scale_xy(v) for v in self.overlay_positions_base["balls"]],
+            "strikes": [scale_xy(v) for v in self.overlay_positions_base["strikes"]],
+            "score": {k: scale_xy(v) for k, v in self.overlay_positions_base["score"].items()},
+        }
+
+    def compute_layout(self):
+        vw = max(dpg.get_viewport_client_width(), self.DEFAULT_VIEWPORT_W)
+        vh = max(dpg.get_viewport_client_height(), self.DEFAULT_VIEWPORT_H)
+
+        usable_w = max(vw - 40, self.PANEL_MIN_WIDTH * 2)
+        left_w = max(int(usable_w * self.LEFT_PANEL_RATIO), self.PANEL_MIN_WIDTH)
+        right_w = max(usable_w - left_w - 20, self.PANEL_MIN_WIDTH)
+        panel_h = max(vh - self.PANEL_HEIGHT_OFFSET, 520)
+
+        image_w = max(left_w - 40, 480)
+        image_h = max(int(panel_h * self.GRAPHICS_HEIGHT_RATIO), 240)
+        relay_h = max(int(panel_h * self.RELAY_HEIGHT_RATIO), 200)
+
+        pitch_h = max(int(panel_h * self.PITCH_TABLE_HEIGHT_RATIO), 180)
+        warning_h = max(int(panel_h * self.WARNING_TABLE_HEIGHT_RATIO), 200)
+
+        return {
+            "left_w": left_w,
+            "right_w": right_w,
+            "panel_h": panel_h,
+            "image_w": image_w,
+            "image_h": image_h,
+            "relay_h": relay_h,
+            "pitch_h": pitch_h,
+            "warning_h": warning_h,
+        }
+
     # ---------------- Anomaly ----------------
     def detect_anomalies(self):
         issues = []
@@ -223,6 +356,31 @@ class ReplayDPGQA:
 
         dpg.set_value("warning_count_text", f"자동 경고: {len(issues)}건")
 
+    def on_event_slider_change(self, sender, app_data):
+        if self.is_syncing_event_slider or not self.events:
+            return
+
+        idx = int(app_data)
+        idx = max(0, min(len(self.events) - 1, idx))
+        self.event_idx = idx
+        self.render_event()
+
+    def jump_to_event_index(self):
+        if not self.events:
+            return
+
+        idx = self.safe_int(dpg.get_value("event_jump_input"))
+        if idx is None:
+            return
+
+        idx = max(0, min(len(self.events) - 1, idx))
+        self.event_idx = idx
+        self.is_syncing_event_slider = True
+        dpg.set_value("event_slider", idx)
+        dpg.set_value("event_jump_input", idx)
+        self.is_syncing_event_slider = False
+        self.render_event()
+
     # ---------------- Render ----------------
     def render_event(self):
         if not self.events:
@@ -232,20 +390,98 @@ class ReplayDPGQA:
         e = self.events[self.event_idx]
         half_txt = "초" if e[3] == "top" else "말"
         base_txt = f"{'1' if e[11] else '-'}{'2' if e[12] else '-'}{'3' if e[13] else '-'}"
+        runner_txt = f"1루:{e[16] or '-'} / 2루:{e[17] or '-'} / 3루:{e[18] or '-'}"
 
+        progress_header = (
+            f"진행률 {self.event_idx + 1} / {len(self.events)} | "
+            f"{e[2]}회{half_txt} | pa_id={e[4]}"
+        )
         msg = (
+            f"{progress_header}\n"
             f"[이벤트 {self.event_idx+1}/{len(self.events)}]\n"
             f"event_id={e[0]}, seq={e[1]}, pa_id={e[4]}, seq_in_pa={e[5]}\n"
             f"{e[2]}회{half_txt} | category={e[6]}\n"
             f"count {e[9]}-{e[10]} | outs={e[8]} | base={base_txt}\n"
-            f"HOME {e[14]} : AWAY {e[15]}\n\n"
+            f"HOME {e[14]} : AWAY {e[15]}\n"
+            f"주자 {runner_txt}\n\n"
             f"{e[7] or '(텍스트 없음)'}"
         )
-        dpg.set_value("status_text", f"이벤트 포커스 | game_id={self.game_id}")
+        self.set_status(f"이벤트 포커스 | game_id={self.game_id}")
         dpg.set_value("relay_text", msg)
+
+        self.is_syncing_event_slider = True
+        if dpg.does_item_exist("event_slider"):
+            dpg.set_value("event_slider", self.event_idx)
+        if dpg.does_item_exist("event_jump_input"):
+            dpg.set_value("event_jump_input", self.event_idx)
+        self.is_syncing_event_slider = False
 
         # 이벤트에 연관된 투구 하이라이트 갱신
         self.refresh_pitch_table(highlight_event_id=e[0])
+        self.update_field_overlay(e)
+
+
+    def update_field_overlay(self, event):
+        if not dpg.does_item_exist(self.overlay_drawlist_tag):
+            return
+
+        dpg.delete_item(self.overlay_drawlist_tag, children_only=True)
+
+        event_outs = self.safe_int(event[8]) or 0
+        event_balls = self.safe_int(event[9]) or 0
+        event_strikes = self.safe_int(event[10]) or 0
+        home_score = self.safe_int(event[14])
+        away_score = self.safe_int(event[15])
+
+        # 1/2/3루 점유
+        base_map = {
+            1: (bool(event[11]), event[16] if len(event) > 16 else None),
+            2: (bool(event[12]), event[17] if len(event) > 17 else None),
+            3: (bool(event[13]), event[18] if len(event) > 18 else None),
+        }
+        for base_no, center in self.overlay_positions["bases"].items():
+            occupied, runner_name = base_map[base_no]
+            fill = (255, 215, 0, 230) if occupied else (120, 120, 120, 120)
+            dpg.draw_circle(center=center, radius=12, color=(255, 255, 255, 255),
+                            fill=fill, thickness=2, parent=self.overlay_drawlist_tag)
+            dpg.draw_text((center[0] - 4, center[1] - 8), str(base_no),
+                          color=(0, 0, 0, 255), size=14, parent=self.overlay_drawlist_tag)
+            if occupied:
+                name_text = str(runner_name).strip() if runner_name else "주자"
+                dpg.draw_text((center[0] + 16, center[1] - 10), name_text,
+                              color=(255, 255, 255, 255), size=14, parent=self.overlay_drawlist_tag)
+
+        # 아웃 카운트(0~2)
+        dpg.draw_text((20, 48), "OUT", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
+        for i, pos in enumerate(self.overlay_positions["outs"]):
+            is_on = i < min(event_outs, 2)
+            fill = (255, 80, 80, 235) if is_on else (70, 70, 70, 130)
+            dpg.draw_circle(center=pos, radius=10, color=(255, 255, 255, 255),
+                            fill=fill, thickness=2, parent=self.overlay_drawlist_tag)
+
+        # 볼/스트라이크
+        dpg.draw_text((20, 308), "B", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
+        for i, pos in enumerate(self.overlay_positions["balls"]):
+            is_on = i < min(event_balls, 4)
+            fill = (255, 210, 70, 235) if is_on else (70, 70, 70, 130)
+            dpg.draw_circle(center=pos, radius=9, color=(255, 255, 255, 255),
+                            fill=fill, thickness=2, parent=self.overlay_drawlist_tag)
+
+        dpg.draw_text((20, 338), "S", color=(255, 255, 255, 255), size=16, parent=self.overlay_drawlist_tag)
+        for i, pos in enumerate(self.overlay_positions["strikes"]):
+            is_on = i < min(event_strikes, 3)
+            fill = (80, 170, 255, 235) if is_on else (70, 70, 70, 130)
+            dpg.draw_circle(center=pos, radius=9, color=(255, 255, 255, 255),
+                            fill=fill, thickness=2, parent=self.overlay_drawlist_tag)
+
+        # 스코어
+        score_pos = self.overlay_positions["score"]
+        dpg.draw_text(score_pos["away_label"], "AWAY", color=(230, 230, 230, 255), size=18, parent=self.overlay_drawlist_tag)
+        dpg.draw_text(score_pos["away_value"], str(away_score if away_score is not None else "-"),
+                      color=(255, 255, 255, 255), size=24, parent=self.overlay_drawlist_tag)
+        dpg.draw_text(score_pos["home_label"], "HOME", color=(230, 230, 230, 255), size=18, parent=self.overlay_drawlist_tag)
+        dpg.draw_text(score_pos["home_value"], str(home_score if home_score is not None else "-"),
+                      color=(255, 255, 255, 255), size=24, parent=self.overlay_drawlist_tag)
 
     def refresh_pitch_table(self, highlight_event_id=None):
         dpg.delete_item("pitch_table", children_only=True)
@@ -293,29 +529,14 @@ class ReplayDPGQA:
         self.tex_w = w
         self.tex_h = h
         data = [0.08, 0.18, 0.10, 1.0] * (w * h)  # RGBA
-
-        with dpg.texture_registry(show=False):
-            if dpg.does_item_exist(self.tex_tag):
-                dpg.delete_item(self.tex_tag)
-            dpg.add_dynamic_texture(w, h, data, tag=self.tex_tag)
+        self.tex_tag = create_or_replace_dynamic_texture(self.tex_tag, w, h, data)
+        if dpg.does_item_exist("stadium_image"):
+            dpg.configure_item("stadium_image", texture_tag=self.tex_tag)
 
     def load_stadium_texture(self, image_path="assets/stadium.png"):
         try:
-            p = Path(image_path)
-            if not p.is_absolute():
-                p = Path(__file__).resolve().parent / p
-            p = p.resolve()
-
-            if not p.exists():
-                dpg.set_value("status_text", f"이미지 파일 없음: {p}")
-                return
-
-            # 핵심: RGBA 강제 + 텍스처 크기와 정확히 동일하게 맞춤
-            img = Image.open(p).convert("RGBA").resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
-
-            pixels = []
-            for r, g, b, a in img.getdata():
-                pixels.extend([r/255.0, g/255.0, b/255.0, a/255.0])
+            self.current_image_path = image_path
+            pixels, p = load_image_pixels(image_path, self.tex_w, self.tex_h, base_dir=Path(__file__).resolve().parent)
 
             # dynamic texture 갱신
             dpg.set_value(self.tex_tag, pixels)
@@ -324,13 +545,57 @@ class ReplayDPGQA:
         except Exception as e:
             dpg.set_value("status_text", f"배경 이미지 로드 실패: {e}")
 
+    def resize_graphics_surface(self, width, height):
+        width = max(int(width), 200)
+        height = max(int(height), 120)
+
+        self.overlay_positions = self.compute_overlay_positions(width, height)
+        self.create_placeholder_texture(width, height)
+
+        if dpg.does_item_exist("stadium_image"):
+            dpg.configure_item("stadium_image", texture_tag=self.tex_tag, width=width, height=height)
+        if dpg.does_item_exist(self.overlay_drawlist_tag):
+            dpg.configure_item(self.overlay_drawlist_tag, width=width, height=height)
+
+        if self.current_image_path:
+            self.load_stadium_texture(self.current_image_path)
+
+    def apply_responsive_layout(self):
+        dims = self.compute_layout()
+        if dpg.does_item_exist("main_window"):
+            dpg.configure_item("main_window", width=dpg.get_viewport_client_width() - 20, height=dpg.get_viewport_client_height() - 20)
+
+        if dpg.does_item_exist("left_panel"):
+            dpg.configure_item("left_panel", width=dims["left_w"], height=dims["panel_h"])
+        if dpg.does_item_exist("right_panel"):
+            dpg.configure_item("right_panel", width=dims["right_w"], height=dims["panel_h"])
+
+        self.resize_graphics_surface(dims["image_w"], dims["image_h"])
+
+        if dpg.does_item_exist("event_slider"):
+            dpg.configure_item("event_slider", width=dims["image_w"])
+        if dpg.does_item_exist("relay_text"):
+            dpg.configure_item("relay_text", width=dims["image_w"], height=dims["relay_h"])
+
+        if dpg.does_item_exist("pitch_table"):
+            dpg.configure_item("pitch_table", height=dims["pitch_h"])
+        if dpg.does_item_exist("warning_table"):
+            dpg.configure_item("warning_table", height=dims["warning_h"])
+
+        if self.events:
+            self.update_field_overlay(self.events[self.event_idx])
+
+    def on_viewport_resize(self, sender=None, app_data=None):
+        if dpg.does_item_exist("main_window"):
+            self.apply_responsive_layout()
+
     # ---------------- UI ----------------
     def build(self):
         dpg.create_context()
 
-        self.create_placeholder_texture(780,360)
+        self.create_placeholder_texture(self.BASE_IMAGE_W, self.BASE_IMAGE_H)
 
-        with dpg.window(label="KBO DB Replay QA", width=1400, height=900):
+        with dpg.window(tag="main_window", label="KBO DB Replay QA", width=self.DEFAULT_VIEWPORT_W - 40, height=self.DEFAULT_VIEWPORT_H - 60):
             with dpg.group(horizontal=True):
                 dpg.add_text("DSN")
                 dpg.add_input_text(tag="dsn_input", width=900, default_value="postgresql://HOST:PASSWORD@HOST:5432/DBNAME")
@@ -349,16 +614,23 @@ class ReplayDPGQA:
                 )
 
             dpg.add_text("상태", tag="status_text")
+            dpg.add_input_text(tag="status_detail_text", multiline=True, readonly=True, width=-1, height=90)
             dpg.add_text("자동 경고: 0건", tag="warning_count_text", color=(255, 100, 100))
 
             dpg.add_separator()
             with dpg.group(horizontal=True):
                 # 좌측: 그래픽 + 문자중계
-                with dpg.child_window(width=820, height=780, border=True):
+                with dpg.child_window(tag="left_panel", width=820, height=780, border=True):
                     dpg.add_text("그래픽 뷰 (야구장 배경 + 오버레이)")
-                    dpg.add_image(self.tex_tag, tag="stadium_image", width=780, height=360)  # texture_tag는 로드 후 갱신
+                    dpg.add_image(self.tex_tag, tag="stadium_image", width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
+                    dpg.add_drawlist(tag=self.overlay_drawlist_tag, width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
 
                     dpg.add_separator()
+                    dpg.add_slider_int(tag="event_slider", label="이벤트 인덱스", width=self.BASE_IMAGE_W, min_value=0, max_value=0, default_value=0, enabled=False, callback=self.on_event_slider_change)
+                    with dpg.group(horizontal=True):
+                        dpg.add_input_int(tag="event_jump_input", label="점프", width=160, default_value=0, min_value=0, min_clamped=True, step=1, step_fast=10)
+                        dpg.add_button(label="이벤트 점프", callback=lambda: self.jump_to_event_index())
+
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="이벤트 ◀", callback=lambda: self.move("event", -1))
                         dpg.add_button(label="이벤트 ▶", callback=lambda: self.move("event", +1))
@@ -369,10 +641,10 @@ class ReplayDPGQA:
                         dpg.add_button(label="이닝 ◀", callback=lambda: self.move("inning", -1))
                         dpg.add_button(label="이닝 ▶", callback=lambda: self.move("inning", +1))
 
-                    dpg.add_input_text(tag="relay_text", multiline=True, readonly=True, width=780, height=350)
+                    dpg.add_input_text(tag="relay_text", multiline=True, readonly=True, width=self.BASE_IMAGE_W, height=350)
 
                 # 우측: 투구 하이라이트 + 경고패널
-                with dpg.child_window(width=550, height=780, border=True):
+                with dpg.child_window(tag="right_panel", width=550, height=780, border=True):
                     dpg.add_text("연관 투구 자동 하이라이트 (현재 event_id 기준)")
                     with dpg.table(header_row=False, tag="pitch_table",
                                    policy=dpg.mvTable_SizingStretchProp,
@@ -390,10 +662,12 @@ class ReplayDPGQA:
                         for _ in range(3):
                             dpg.add_table_column()
 
-        dpg.create_viewport(title="KBO Replay QA (Graphics + Alerts)", width=1440, height=940)
+        dpg.create_viewport(title="KBO Replay QA (Graphics + Alerts)", width=self.DEFAULT_VIEWPORT_W, height=self.DEFAULT_VIEWPORT_H)
         dpg.setup_dearpygui()
-        setup_korean_font()
+        bind_korean_font(size=16)
+        dpg.set_viewport_resize_callback(self.on_viewport_resize)
         dpg.show_viewport()
+        self.apply_responsive_layout()
         dpg.start_dearpygui()
         dpg.destroy_context()
 

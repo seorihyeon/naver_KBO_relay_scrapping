@@ -10,6 +10,7 @@ import dearpygui.dearpygui as dpg
 
 from web_interface import Scrapper
 import check_data
+from dpg_utils import bind_korean_font
 
 
 class KboNaverScrapperGUI:
@@ -453,15 +454,9 @@ class KboNaverScrapperGUI:
     def build_ui(self):
         dpg.create_context()
         dpg.create_viewport(title = "KBO Naver Scrapper", width = 900, height = 600)
-
-        with dpg.font_registry():
-            with dpg.font("fonts/NanumGothic.ttf", 16) as default_font:
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
-                dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
-            
+        bind_korean_font(size=16)
 
         with dpg.window(tag="main", label = "KBO Naver Scrapper", width = 900, height = 600):
-            dpg.bind_font(default_font)
             dpg.add_text("KBO Naver Scrapper", bullet = True, color = (255, 0, 0), wrap = 800, parent="main")
             dpg.add_spacer(height=10, parent="main")
 
