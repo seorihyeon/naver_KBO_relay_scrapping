@@ -21,6 +21,18 @@ python postgres_loader.py \
   --create-schema
 ```
 
+### 통합 GUI 실행 (탭형: 수집/적재/Replay)
+
+`kbo_integrated_gui.py`에서 하나의 GUI에서 아래 기능을 탭으로 실행할 수 있습니다.
+
+- 데이터 수집 탭: 수집 GUI 실행
+- 데이터 적재 탭: DSN 연결, 스키마 생성, JSON 적재
+- Replay/검증 탭: 게임 로드, 리플레이 확인, 경고 재검사
+
+```bash
+python kbo_integrated_gui.py
+```
+
 ### 생성/사용 테이블
 
 - `raw_games`: 원본 JSON 저장
