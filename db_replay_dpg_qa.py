@@ -2,8 +2,28 @@ from __future__ import annotations
 
 import dearpygui.dearpygui as dpg
 import psycopg
+import os
+from pathlib import Path
 from PIL import Image
 
+def setup_korean_font():
+    candidates = [
+        r"fonts/NanumGothic.otf",
+        r"fonts/NanumGothic.ttf"
+    ]
+
+    font_path = next((p for p in candidates if os.path.exists(p)), None)
+    if not font_path:
+        print("[WARN] 한글 폰트를 찾지 못했습니다.")
+        return None
+
+    with dpg.font_registry():
+        with dpg.font(font_path, 16) as korean_font:
+            dpg.add_font_range_hint(dpg.mvFontRangeHint_Default)
+            dpg.add_font_range_hint(dpg.mvFontRangeHint_Korean)
+    
+    dpg.bind_font(korean_font)
+    return korean_font
 
 class ReplayDPGQA:
     def __init__(self):
@@ -269,21 +289,38 @@ class ReplayDPGQA:
             dpg.set_value("relay_text", f"[이닝 {self.inning_idx+1}/{len(self.innings)}]\n{inn}")
 
     # ---------------- Graphics ----------------
+    def create_placeholder_texture(self, w=780, h=360):
+        self.tex_w = w
+        self.tex_h = h
+        data = [0.08, 0.18, 0.10, 1.0] * (w * h)  # RGBA
+
+        with dpg.texture_registry(show=False):
+            if dpg.does_item_exist(self.tex_tag):
+                dpg.delete_item(self.tex_tag)
+            dpg.add_dynamic_texture(w, h, data, tag=self.tex_tag)
+
     def load_stadium_texture(self, image_path="assets/stadium.png"):
         try:
-            image = Image.open(image_path).convert("RGBA")
-            width, height = image.size
-            data = []
-            for r, g, b, a in image.getdata():
-                data.extend([r / 255.0, g / 255.0, b / 255.0, a / 255.0])
+            p = Path(image_path)
+            if not p.is_absolute():
+                p = Path(__file__).resolve().parent / p
+            p = p.resolve()
 
-            with dpg.texture_registry(show=False):
-                if dpg.does_item_exist(self.tex_tag):
-                    dpg.delete_item(self.tex_tag)
-                dpg.add_static_texture(width, height, data, tag=self.tex_tag)
+            if not p.exists():
+                dpg.set_value("status_text", f"이미지 파일 없음: {p}")
+                return
 
-            dpg.configure_item("stadium_image", texture_tag=self.tex_tag)
-            dpg.set_value("status_text", f"배경 이미지 로드 성공: {image_path}")
+            # 핵심: RGBA 강제 + 텍스처 크기와 정확히 동일하게 맞춤
+            img = Image.open(p).convert("RGBA").resize((self.tex_w, self.tex_h), Image.Resampling.LANCZOS)
+
+            pixels = []
+            for r, g, b, a in img.getdata():
+                pixels.extend([r/255.0, g/255.0, b/255.0, a/255.0])
+
+            # dynamic texture 갱신
+            dpg.set_value(self.tex_tag, pixels)
+            dpg.set_value("status_text", f"배경 이미지 로드 성공: {p}")
+
         except Exception as e:
             dpg.set_value("status_text", f"배경 이미지 로드 실패: {e}")
 
@@ -291,10 +328,12 @@ class ReplayDPGQA:
     def build(self):
         dpg.create_context()
 
+        self.create_placeholder_texture(780,360)
+
         with dpg.window(label="KBO DB Replay QA", width=1400, height=900):
             with dpg.group(horizontal=True):
                 dpg.add_text("DSN")
-                dpg.add_input_text(tag="dsn_input", width=900, default_value="postgresql://USER:PASSWORD@HOST:5432/DBNAME")
+                dpg.add_input_text(tag="dsn_input", width=900, default_value="postgresql://HOST:PASSWORD@HOST:5432/DBNAME")
                 dpg.add_button(label="DB 연결", callback=lambda: self.connect_db())
 
             with dpg.group(horizontal=True):
@@ -317,7 +356,7 @@ class ReplayDPGQA:
                 # 좌측: 그래픽 + 문자중계
                 with dpg.child_window(width=820, height=780, border=True):
                     dpg.add_text("그래픽 뷰 (야구장 배경 + 오버레이)")
-                    dpg.add_image("0", tag="stadium_image", width=780, height=360)  # texture_tag는 로드 후 갱신
+                    dpg.add_image(self.tex_tag, tag="stadium_image", width=780, height=360)  # texture_tag는 로드 후 갱신
 
                     dpg.add_separator()
                     with dpg.group(horizontal=True):
@@ -353,6 +392,7 @@ class ReplayDPGQA:
 
         dpg.create_viewport(title="KBO Replay QA (Graphics + Alerts)", width=1440, height=940)
         dpg.setup_dearpygui()
+        setup_korean_font()
         dpg.show_viewport()
         dpg.start_dearpygui()
         dpg.destroy_context()
