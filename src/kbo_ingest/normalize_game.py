@@ -49,7 +49,12 @@ def _batter_reached_base(text: str) -> int | None:
     return None
 
 
-def _apply_baserunner_transition(text: str, runner_name_by_base: dict[int, str | None]) -> None:
+def _apply_baserunner_transition(
+    text: str,
+    runner_name_by_base: dict[int, str | None],
+    runner_id_by_base: dict[int, str | None],
+    name_to_player_id: dict[str, str],
+) -> None:
     if not text:
         return
     move = re.search(r"([123])루주자\s*([^ :]+)\s*:.*([123])루까지 진루", text)
@@ -57,20 +62,25 @@ def _apply_baserunner_transition(text: str, runner_name_by_base: dict[int, str |
         from_base = int(move.group(1))
         runner_name = move.group(2).strip()
         to_base = int(move.group(3))
+        runner_id = runner_id_by_base.get(from_base) or name_to_player_id.get(runner_name)
         runner_name_by_base[from_base] = None
+        runner_id_by_base[from_base] = None
         runner_name_by_base[to_base] = runner_name
+        runner_id_by_base[to_base] = runner_id
         return
 
     home_in = re.search(r"([123])루주자\s*([^ :]+)\s*:.*홈인", text)
     if home_in:
         from_base = int(home_in.group(1))
         runner_name_by_base[from_base] = None
+        runner_id_by_base[from_base] = None
         return
 
     out = re.search(r"([123])루주자\s*([^ :]+)\s*:.*아웃", text)
     if out:
         from_base = int(out.group(1))
         runner_name_by_base[from_base] = None
+        runner_id_by_base[from_base] = None
 
 
 def _infer_outs_recorded(text: str) -> int:
@@ -224,6 +234,9 @@ def _is_pa_end(event: EventRec) -> bool:
 
 def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
     with conn.cursor() as cur:
+        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_id TEXT")
+        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_id TEXT")
+        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_id TEXT")
         cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_name TEXT")
         cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_name TEXT")
         cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_name TEXT")
@@ -247,6 +260,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         events = _fetch_events(cur, raw_game_id)
         cur.execute("SELECT player_id, player_name FROM players")
         player_name_by_id = {row[0]: row[1] for row in cur.fetchall() if row[0]}
+        name_to_player_id = {}
+        for player_id, player_name in player_name_by_id.items():
+            if player_name and player_name not in name_to_player_id:
+                name_to_player_id[player_name] = player_id
 
         inning_map: dict[tuple[int, str], int] = {}
         pa_counter = 0
@@ -256,6 +273,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_event_no = 0
         event_id_by_pitch_id: dict[str, int] = {}
         runner_name_by_base = {1: None, 2: None, 3: None}
+        runner_id_by_base = {1: None, 2: None, 3: None}
 
         for event_seq_game, ev in enumerate(events, start = 1):
             inning_no = ev.inning_no or 0
@@ -313,14 +331,17 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 current_pa_event_no = 0
 
             current_pa_event_no += 1
-            _apply_baserunner_transition(ev.text, runner_name_by_base)
+            _apply_baserunner_transition(ev.text, runner_name_by_base, runner_id_by_base, name_to_player_id)
             has_runner_transition = bool(re.search(r"[123]루주자\s*[^ :]+\s*:.*(까지 진루|홈인|아웃)", ev.text or ""))
             if not ev.base1:
                 runner_name_by_base[1] = None
+                runner_id_by_base[1] = None
             if not ev.base2:
                 runner_name_by_base[2] = None
+                runner_id_by_base[2] = None
             if not ev.base3:
                 runner_name_by_base[3] = None
+                runner_id_by_base[3] = None
 
             for base_no in (1, 2, 3):
                 if has_runner_transition:
@@ -328,11 +349,13 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 parsed_name = _extract_runner_name(ev.text, base_no)
                 if parsed_name:
                     runner_name_by_base[base_no] = parsed_name
+                    runner_id_by_base[base_no] = name_to_player_id.get(parsed_name)
             batter_reach_base = _batter_reached_base(ev.text)
             if batter_reach_base and ev.batter_id:
                 batter_name = player_name_by_id.get(ev.batter_id)
                 if batter_name:
                     runner_name_by_base[batter_reach_base] = batter_name
+                runner_id_by_base[batter_reach_base] = ev.batter_id
 
             cur.execute(
                 """
@@ -340,8 +363,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     game_id, inning_id, pa_id, event_seq_game, event_seq_in_pa,
                     event_type_code, event_category, text, batter_id, pitcher_id,
                     outs, balls, strikes, base1_occupied, base2_occupied, base3_occupied,
-                    home_score, away_score, base1_runner_name, base2_runner_name, base3_runner_name, raw_event_id, raw_payload
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    home_score, away_score,
+                    base1_runner_id, base2_runner_id, base3_runner_id,
+                    base1_runner_name, base2_runner_name, base3_runner_name, raw_event_id, raw_payload
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING event_id
                 """,
                 (
@@ -363,6 +388,9 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     ev.base3,
                     ev.home_score,
                     ev.away_score,
+                    runner_id_by_base[1],
+                    runner_id_by_base[2],
+                    runner_id_by_base[3],
                     runner_name_by_base[1],
                     runner_name_by_base[2],
                     runner_name_by_base[3],

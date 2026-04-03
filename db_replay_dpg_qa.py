@@ -28,6 +28,7 @@ class ReplayDPGQA:
         self.pitch_state_by_event = {}
         self.pa_state_by_id = {}
         self.derived_state_by_event = {}
+        self.player_name_by_id = {}
 
         # ---- Layout constants ----
         self.DEFAULT_VIEWPORT_W = 1440
@@ -139,6 +140,10 @@ class ReplayDPGQA:
             append=False
         )
         try:
+            with self.conn.cursor() as cur:
+                cur.execute("SELECT player_id, player_name FROM players")
+                self.player_name_by_id = {row[0]: row[1] for row in cur.fetchall() if row[0]}
+
             self.events = self.fetch_events(self.game_id)
             self.set_status("게임 로드 중...", f"이벤트 로드 완료: {len(self.events)}건", append=True)
 
@@ -212,6 +217,9 @@ class ReplayDPGQA:
         b1_name_expr = "e.base1_runner_name" if "base1_runner_name" in cols else "NULL"
         b2_name_expr = "e.base2_runner_name" if "base2_runner_name" in cols else "NULL"
         b3_name_expr = "e.base3_runner_name" if "base3_runner_name" in cols else "NULL"
+        b1_id_expr = "e.base1_runner_id" if "base1_runner_id" in cols else "NULL"
+        b2_id_expr = "e.base2_runner_id" if "base2_runner_id" in cols else "NULL"
+        b3_id_expr = "e.base3_runner_id" if "base3_runner_id" in cols else "NULL"
 
         q = f"""
         SELECT e.event_id, e.event_seq_game, i.inning_no, i.half, e.pa_id, e.event_seq_in_pa,
@@ -220,7 +228,10 @@ class ReplayDPGQA:
                e.home_score, e.away_score,
                {b1_name_expr} AS base1_runner_name,
                {b2_name_expr} AS base2_runner_name,
-               {b3_name_expr} AS base3_runner_name
+               {b3_name_expr} AS base3_runner_name,
+               {b1_id_expr} AS base1_runner_id,
+               {b2_id_expr} AS base2_runner_id,
+               {b3_id_expr} AS base3_runner_id
         FROM pa_events e
         LEFT JOIN innings i ON i.inning_id = e.inning_id
         WHERE e.game_id = %s
@@ -314,6 +325,19 @@ class ReplayDPGQA:
         if txt in {"", "-", "주자"}:
             return None
         return txt
+
+    def resolve_runner_name(self, event, base_no, fallback_name=None):
+        clean_name = self.normalize_runner_name(fallback_name)
+        if clean_name:
+            return clean_name
+
+        id_index = {1: 19, 2: 20, 3: 21}.get(base_no)
+        if id_index is None or len(event) <= id_index:
+            return None
+        runner_id = event[id_index]
+        if not runner_id:
+            return None
+        return self.normalize_runner_name(self.player_name_by_id.get(runner_id))
 
     def build_derived_state_map(self):
         derived = {}
@@ -649,9 +673,9 @@ class ReplayDPGQA:
         state = self.get_resolved_game_state(self.event_idx)
         half_txt = "초" if e[3] == "top" else "말"
         base_txt = f"{'1' if state['b1_occ'] else '-'}{'2' if state['b2_occ'] else '-'}{'3' if state['b3_occ'] else '-'}"
-        runner_1 = state["b1_name"] or "-"
-        runner_2 = state["b2_name"] or "-"
-        runner_3 = state["b3_name"] or "-"
+        runner_1 = self.resolve_runner_name(e, 1, state["b1_name"]) or "-"
+        runner_2 = self.resolve_runner_name(e, 2, state["b2_name"]) or "-"
+        runner_3 = self.resolve_runner_name(e, 3, state["b3_name"]) or "-"
 
         progress_header = (
             f"진행률 {self.event_idx + 1} / {len(self.events)} | "
@@ -703,9 +727,9 @@ class ReplayDPGQA:
 
         # 1/2/3루 점유
         base_map = {
-            1: (state["b1_occ"], state["b1_name"]),
-            2: (state["b2_occ"], state["b2_name"]),
-            3: (state["b3_occ"], state["b3_name"]),
+            1: (state["b1_occ"], self.resolve_runner_name(event, 1, state["b1_name"])),
+            2: (state["b2_occ"], self.resolve_runner_name(event, 2, state["b2_name"])),
+            3: (state["b3_occ"], self.resolve_runner_name(event, 3, state["b3_name"])),
         }
         for base_no, center in self.overlay_positions["bases"].items():
             occupied, runner_name = base_map[base_no]
