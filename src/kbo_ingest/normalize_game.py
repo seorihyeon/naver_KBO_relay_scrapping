@@ -61,6 +61,17 @@ def _apply_baserunner_transition(text: str, runner_name_by_base: dict[int, str |
         runner_name_by_base[from_base] = None
 
 
+def _infer_outs_recorded(text: str) -> int:
+    txt = text or ""
+    if "삼중살" in txt:
+        return 3
+    if "병살" in txt:
+        return 2
+    if "아웃" in txt:
+        return 1
+    return 0
+
+
 @dataclass
 class EventRec:
     raw_event_id: int
@@ -393,6 +404,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 )
 
             if ev.category == "baserunning":
+                outs_recorded = _infer_outs_recorded(ev.text)
                 cur.execute(
                     """
                     INSERT INTO baserunning_events (
@@ -409,8 +421,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         ev.batter_id,
                         None,
                         "steal" if "도루" in ev.text else "advance",
-                        bool("아웃" in ev.text),
-                        1 if "아웃" in ev.text else 0,
+                        bool(outs_recorded),
+                        outs_recorded,
                         bool("실책" in ev.text),
                         ev.text,
                     ),
