@@ -24,6 +24,7 @@ class ReplayDPGQA:
 
         self.pitch_row_tags = []
         self.warning_rows = []
+        self.pitch_state_by_event = {}
 
         # ---- Layout constants ----
         self.DEFAULT_VIEWPORT_W = 1440
@@ -46,7 +47,7 @@ class ReplayDPGQA:
         self.is_syncing_event_slider = False
         self.current_image_path = "assets/stadium.png"
         self.overlay_positions_base = {
-            "bases": {1: (390, 246), 2: (338, 205), 3: (286, 246)},
+            "bases": {1: (390, 252), 2: (338, 210), 3: (286, 252)},
             "outs": [(42, 42), (72, 42), (102, 42)],
             "balls": [(44, 308), (74, 308), (104, 308), (134, 308)],
             "strikes": [(44, 334), (74, 334), (104, 334)],
@@ -139,6 +140,15 @@ class ReplayDPGQA:
             self.set_status("게임 로드 중...", f"이벤트 로드 완료: {len(self.events)}건", append=True)
 
             self.pitches = self.fetch_pitches(self.game_id)
+            self.pitch_state_by_event = {}
+            for p in self.pitches:
+                event_id = p[1]
+                if event_id is None:
+                    continue
+                self.pitch_state_by_event[event_id] = {
+                    "balls": self.safe_int(p[10]),
+                    "strikes": self.safe_int(p[11]),
+                }
             self.set_status("게임 로드 중...", f"투구 로드 완료: {len(self.pitches)}건", append=True)
 
             self.pas = self.fetch_pas(self.game_id)
@@ -268,6 +278,8 @@ class ReplayDPGQA:
 
     def get_resolved_game_state(self, event_idx):
         outs = balls = strikes = home_score = away_score = None
+        b1_occ = b2_occ = b3_occ = None
+        b1_name = b2_name = b3_name = None
 
         for i in range(event_idx, -1, -1):
             ev = self.events[i]
@@ -277,11 +289,33 @@ class ReplayDPGQA:
                 balls = self.safe_int(ev[9])
             if strikes is None:
                 strikes = self.safe_int(ev[10])
+            if balls is None or strikes is None:
+                pitch_state = self.pitch_state_by_event.get(ev[0])
+                if pitch_state:
+                    if balls is None:
+                        balls = pitch_state.get("balls")
+                    if strikes is None:
+                        strikes = pitch_state.get("strikes")
             if home_score is None:
                 home_score = self.safe_int(ev[14])
             if away_score is None:
                 away_score = self.safe_int(ev[15])
-            if all(v is not None for v in [outs, balls, strikes, home_score, away_score]):
+
+            if b1_occ is None and len(ev) > 11 and ev[11] is not None:
+                b1_occ = bool(ev[11])
+            if b2_occ is None and len(ev) > 12 and ev[12] is not None:
+                b2_occ = bool(ev[12])
+            if b3_occ is None and len(ev) > 13 and ev[13] is not None:
+                b3_occ = bool(ev[13])
+
+            if b1_name is None and len(ev) > 16 and ev[16]:
+                b1_name = str(ev[16]).strip()
+            if b2_name is None and len(ev) > 17 and ev[17]:
+                b2_name = str(ev[17]).strip()
+            if b3_name is None and len(ev) > 18 and ev[18]:
+                b3_name = str(ev[18]).strip()
+
+            if all(v is not None for v in [outs, balls, strikes, home_score, away_score, b1_occ, b2_occ, b3_occ]):
                 break
 
         return {
@@ -290,6 +324,12 @@ class ReplayDPGQA:
             "strikes": strikes if strikes is not None else 0,
             "home_score": home_score if home_score is not None else 0,
             "away_score": away_score if away_score is not None else 0,
+            "b1_occ": b1_occ if b1_occ is not None else False,
+            "b2_occ": b2_occ if b2_occ is not None else False,
+            "b3_occ": b3_occ if b3_occ is not None else False,
+            "b1_name": b1_name,
+            "b2_name": b2_name,
+            "b3_name": b3_name,
         }
 
     def compute_overlay_positions(self, image_w, image_h):
@@ -436,10 +476,10 @@ class ReplayDPGQA:
         e = self.events[self.event_idx]
         state = self.get_resolved_game_state(self.event_idx)
         half_txt = "초" if e[3] == "top" else "말"
-        base_txt = f"{'1' if e[11] else '-'}{'2' if e[12] else '-'}{'3' if e[13] else '-'}"
-        runner_1 = (e[16] if len(e) > 16 else None) or "-"
-        runner_2 = (e[17] if len(e) > 17 else None) or "-"
-        runner_3 = (e[18] if len(e) > 18 else None) or "-"
+        base_txt = f"{'1' if state['b1_occ'] else '-'}{'2' if state['b2_occ'] else '-'}{'3' if state['b3_occ'] else '-'}"
+        runner_1 = state["b1_name"] or "-"
+        runner_2 = state["b2_name"] or "-"
+        runner_3 = state["b3_name"] or "-"
 
         progress_header = (
             f"진행률 {self.event_idx + 1} / {len(self.events)} | "
@@ -491,9 +531,9 @@ class ReplayDPGQA:
 
         # 1/2/3루 점유
         base_map = {
-            1: (bool(event[11]), event[16] if len(event) > 16 else None),
-            2: (bool(event[12]), event[17] if len(event) > 17 else None),
-            3: (bool(event[13]), event[18] if len(event) > 18 else None),
+            1: (state["b1_occ"], state["b1_name"]),
+            2: (state["b2_occ"], state["b2_name"]),
+            3: (state["b3_occ"], state["b3_name"]),
         }
         for base_no, center in self.overlay_positions["bases"].items():
             occupied, runner_name = base_map[base_no]
@@ -504,7 +544,7 @@ class ReplayDPGQA:
                           color=(0, 0, 0, 255), size=14, parent=self.overlay_drawlist_tag)
             if occupied:
                 name_text = str(runner_name).strip() if runner_name else "주자"
-                dpg.draw_text((center[0] + 14, center[1] - 24), f"{base_no}루:{name_text}",
+                dpg.draw_text((center[0] + 14, center[1] - 24), name_text,
                               color=(255, 255, 255, 255), size=14, parent=self.overlay_drawlist_tag)
 
         # 아웃 카운트(0~2)
