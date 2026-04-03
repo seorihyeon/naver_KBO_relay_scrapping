@@ -272,8 +272,8 @@ class ReplayDPGQA:
         }
 
     def compute_layout(self):
-        vw = max(dpg.get_viewport_client_width(), self.DEFAULT_VIEWPORT_W)
-        vh = max(dpg.get_viewport_client_height(), self.DEFAULT_VIEWPORT_H)
+        vw = dpg.get_viewport_client_width() or self.DEFAULT_VIEWPORT_W
+        vh = dpg.get_viewport_client_height() or self.DEFAULT_VIEWPORT_H
 
         usable_w = max(vw - 40, self.PANEL_MIN_WIDTH * 2)
         left_w = max(int(usable_w * self.LEFT_PANEL_RATIO), self.PANEL_MIN_WIDTH)
@@ -529,9 +529,15 @@ class ReplayDPGQA:
         self.tex_w = w
         self.tex_h = h
         data = [0.08, 0.18, 0.10, 1.0] * (w * h)  # RGBA
+        old_tex_tag = self.tex_tag
         self.tex_tag = create_or_replace_dynamic_texture(self.tex_tag, w, h, data)
         if dpg.does_item_exist("stadium_image"):
             dpg.configure_item("stadium_image", texture_tag=self.tex_tag)
+        if old_tex_tag != self.tex_tag and dpg.does_item_exist(old_tex_tag):
+            try:
+                dpg.delete_item(old_tex_tag)
+            except Exception:
+                pass
 
     def load_stadium_texture(self, image_path="assets/stadium.png"):
         try:
@@ -563,7 +569,11 @@ class ReplayDPGQA:
     def apply_responsive_layout(self):
         dims = self.compute_layout()
         if dpg.does_item_exist("main_window"):
-            dpg.configure_item("main_window", width=dpg.get_viewport_client_width() - 20, height=dpg.get_viewport_client_height() - 20)
+            dpg.configure_item(
+                "main_window",
+                width=max((dpg.get_viewport_client_width() or self.DEFAULT_VIEWPORT_W) - 20, 700),
+                height=max((dpg.get_viewport_client_height() or self.DEFAULT_VIEWPORT_H) - 20, 520),
+            )
 
         if dpg.does_item_exist("left_panel"):
             dpg.configure_item("left_panel", width=dims["left_w"], height=dims["panel_h"])
