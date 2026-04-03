@@ -319,7 +319,7 @@ class ReplayDPGQA:
         prev_pa = None
 
         for i, e in enumerate(self.events):
-            event_id, seq, inning_no, half, pa_id, seq_in_pa, cat, text, outs, balls, strikes, b1, b2, b3, hs, aws = e
+            event_id, seq, inning_no, half, pa_id, seq_in_pa, cat, text, outs, balls, strikes, b1, b2, b3, hs, aws = e[:16]
             balls_i = self.safe_int(balls)
             strikes_i = self.safe_int(strikes)
             hs_i = self.safe_int(hs)
