@@ -331,9 +331,16 @@ class ReplayDPGQA:
             if any(keyword in text for keyword in ["볼넷", "고의4구", "몸에 맞는 볼"]):
                 balls, strikes = 0, 0
 
-            out_add = text.count("아웃")
-            if "병살" in text and out_add < 2:
+            out_add = 0
+            if "삼중살" in text:
+                out_add = 3
+            elif "병살" in text:
                 out_add = 2
+            elif "아웃" in text:
+                # "송구아웃", "포스아웃" 등 보조 설명으로 "아웃"이 여러 번 들어가도
+                # 기본적으로 1아웃 처리한다.
+                out_add = 1
+
             if out_add > 0:
                 outs = min(3, outs + out_add)
                 balls, strikes = 0, 0
