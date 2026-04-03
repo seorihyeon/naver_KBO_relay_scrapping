@@ -33,7 +33,7 @@ class ReplayDPGQA:
         self.PANEL_MIN_WIDTH = 420
         self.TOP_SECTION_HEIGHT = 330
         self.PANEL_GAP = 20
-        self.LEFT_FIXED_HEIGHT = 190
+        self.LEFT_FIXED_HEIGHT = 170
         self.RIGHT_FIXED_HEIGHT = 90
         self.BASE_IMAGE_W = 780
         self.BASE_IMAGE_H = 360
@@ -42,6 +42,7 @@ class ReplayDPGQA:
         self.tex_tag = "stadium_tex"
         self.pa_event_columns = None
         self.overlay_drawlist_tag = "stadium_overlay_drawlist"
+        self.background_draw_tag = "stadium_bg_image"
         self.is_syncing_event_slider = False
         self.current_image_path = "assets/stadium.png"
         self.overlay_positions_base = {
@@ -290,9 +291,9 @@ class ReplayDPGQA:
 
         image_w = max(left_w - 40, 420)
 
-        left_available = max(panel_h - self.LEFT_FIXED_HEIGHT, 240)
-        relay_h = self.clamp(left_available * 0.30, 90, 170)
-        image_h = self.clamp((left_available - relay_h) / 2, 120, 230)
+        left_available = max(panel_h - self.LEFT_FIXED_HEIGHT, 260)
+        relay_h = self.clamp(left_available * 0.34, 90, 180)
+        image_h = self.clamp(min(left_available - relay_h, image_w / self.BASE_IMAGE_RATIO), 150, 320)
 
         right_available = max(panel_h - self.RIGHT_FIXED_HEIGHT, 220)
         pitch_h = self.clamp(right_available * 0.45, 120, 260)
@@ -439,6 +440,13 @@ class ReplayDPGQA:
             return
 
         dpg.delete_item(self.overlay_drawlist_tag, children_only=True)
+        dpg.draw_image(
+            self.tex_tag,
+            pmin=(0, 0),
+            pmax=(self.tex_w, self.tex_h),
+            parent=self.overlay_drawlist_tag,
+            tag=self.background_draw_tag,
+        )
 
         event_outs = self.safe_int(event[8]) or 0
         event_balls = self.safe_int(event[9]) or 0
@@ -544,8 +552,6 @@ class ReplayDPGQA:
         data = [0.08, 0.18, 0.10, 1.0] * (w * h)  # RGBA
         old_tex_tag = self.tex_tag
         self.tex_tag = create_or_replace_dynamic_texture(self.tex_tag, w, h, data)
-        if dpg.does_item_exist("stadium_image"):
-            dpg.configure_item("stadium_image", texture_tag=self.tex_tag)
         if old_tex_tag != self.tex_tag and dpg.does_item_exist(old_tex_tag):
             try:
                 dpg.delete_item(old_tex_tag)
@@ -559,6 +565,15 @@ class ReplayDPGQA:
 
             # dynamic texture 갱신
             dpg.set_value(self.tex_tag, pixels)
+            if dpg.does_item_exist(self.overlay_drawlist_tag):
+                dpg.delete_item(self.overlay_drawlist_tag, children_only=True)
+                dpg.draw_image(
+                    self.tex_tag,
+                    pmin=(0, 0),
+                    pmax=(self.tex_w, self.tex_h),
+                    parent=self.overlay_drawlist_tag,
+                    tag=self.background_draw_tag,
+                )
             dpg.set_value("status_text", f"배경 이미지 로드 성공: {p}")
 
         except Exception as e:
@@ -582,13 +597,20 @@ class ReplayDPGQA:
         self.overlay_positions = self.compute_overlay_positions(render_w, render_h)
         self.create_placeholder_texture(render_w, render_h)
 
-        if dpg.does_item_exist("stadium_image"):
-            dpg.configure_item("stadium_image", texture_tag=self.tex_tag, width=render_w, height=render_h)
         if dpg.does_item_exist(self.overlay_drawlist_tag):
             dpg.configure_item(self.overlay_drawlist_tag, width=render_w, height=render_h)
 
         if self.current_image_path:
             self.load_stadium_texture(self.current_image_path)
+        elif dpg.does_item_exist(self.overlay_drawlist_tag):
+            dpg.delete_item(self.overlay_drawlist_tag, children_only=True)
+            dpg.draw_image(
+                self.tex_tag,
+                pmin=(0, 0),
+                pmax=(render_w, render_h),
+                parent=self.overlay_drawlist_tag,
+                tag=self.background_draw_tag,
+            )
 
     def apply_responsive_layout(self):
         dims = self.compute_layout()
@@ -656,7 +678,6 @@ class ReplayDPGQA:
                 # 좌측: 그래픽 + 문자중계
                 with dpg.child_window(tag="left_panel", width=820, height=600, border=True):
                     dpg.add_text("그래픽 뷰 (야구장 배경 + 오버레이)")
-                    dpg.add_image(self.tex_tag, tag="stadium_image", width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
                     dpg.add_drawlist(tag=self.overlay_drawlist_tag, width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
 
                     dpg.add_separator()
