@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dearpygui.dearpygui as dpg
 import psycopg
+import re
 from pathlib import Path
 
 from dpg_utils import bind_korean_font, create_or_replace_dynamic_texture, load_image_pixels
@@ -25,6 +26,8 @@ class ReplayDPGQA:
         self.pitch_row_tags = []
         self.warning_rows = []
         self.pitch_state_by_event = {}
+        self.pa_state_by_id = {}
+        self.derived_state_by_event = {}
 
         # ---- Layout constants ----
         self.DEFAULT_VIEWPORT_W = 1440
@@ -152,10 +155,20 @@ class ReplayDPGQA:
             self.set_status("게임 로드 중...", f"투구 로드 완료: {len(self.pitches)}건", append=True)
 
             self.pas = self.fetch_pas(self.game_id)
+            self.pa_state_by_id = {}
+            for pa in self.pas:
+                pa_id = pa[0]
+                self.pa_state_by_id[pa_id] = {
+                    "outs_before": self.safe_int(pa[6]),
+                    "outs_after": self.safe_int(pa[7]),
+                    "start_seqno": self.safe_int(pa[12]),
+                    "end_seqno": self.safe_int(pa[13]),
+                }
             self.set_status("게임 로드 중...", f"타석 로드 완료: {len(self.pas)}건", append=True)
 
             self.innings = self.fetch_innings(self.game_id)
             self.set_status("게임 로드 중...", f"이닝 로드 완료: {len(self.innings)}건", append=True)
+            self.derived_state_by_event = self.build_derived_state_map()
 
             self.event_idx = self.pitch_idx = self.pa_idx = self.inning_idx = 0
 
@@ -276,7 +289,106 @@ class ReplayDPGQA:
                 return idx
         return None
 
+    def extract_runner_name_from_text(self, text, base_no):
+        if not text:
+            return None
+
+        direct = re.search(rf"{base_no}루주자\\s*([^ :]+)", text)
+        if direct:
+            return direct.group(1).strip()
+
+        if base_no == 1:
+            batter_on_base = re.search(r"^([^ :]+)\\s*:\\s*.*(볼넷|몸에 맞는 볼|고의4구|자동 고의4구|내야안타|안타)", text)
+            if batter_on_base:
+                return batter_on_base.group(1).strip()
+
+        return None
+
+    def build_derived_state_map(self):
+        derived = {}
+        balls, strikes, outs = 0, 0, 0
+        runner_names = {1: None, 2: None, 3: None}
+
+        for ev in self.events:
+            event_id = ev[0]
+            text = (ev[7] or "").strip()
+            occ = {
+                1: bool(ev[11]) if len(ev) > 11 and ev[11] is not None else False,
+                2: bool(ev[12]) if len(ev) > 12 and ev[12] is not None else False,
+                3: bool(ev[13]) if len(ev) > 13 and ev[13] is not None else False,
+            }
+
+            if "번타자" in text:
+                balls, strikes = 0, 0
+
+            if re.search(r"\d+구\s*볼", text) and "볼넷" not in text and "몸에 맞는 볼" not in text:
+                balls = min(4, balls + 1)
+            if "헛스윙" in text or ("스트라이크" in text and "자동 고의4구" not in text):
+                strikes = min(3, strikes + 1)
+            if "파울" in text and strikes < 2:
+                strikes += 1
+
+            if any(keyword in text for keyword in ["볼넷", "고의4구", "몸에 맞는 볼"]):
+                balls, strikes = 0, 0
+
+            out_add = text.count("아웃")
+            if "병살" in text and out_add < 2:
+                out_add = 2
+            if out_add > 0:
+                outs = min(3, outs + out_add)
+                balls, strikes = 0, 0
+
+            if "공격" in text and ("회초" in text or "회말" in text):
+                outs, balls, strikes = 0, 0, 0
+                runner_names = {1: None, 2: None, 3: None}
+
+            for base_no in [1, 2, 3]:
+                if not occ[base_no]:
+                    runner_names[base_no] = None
+                    continue
+
+                found_name = self.extract_runner_name_from_text(text, base_no)
+                if found_name:
+                    runner_names[base_no] = found_name
+                elif base_no == 1:
+                    batter_on_base = re.search(
+                        r"^([^ :]+)\s*:\s*.*(볼넷|몸에 맞는 볼|고의4구|자동 고의4구|내야안타|안타)",
+                        text,
+                    )
+                    if batter_on_base:
+                        runner_names[1] = batter_on_base.group(1).strip()
+
+            derived[event_id] = {
+                "outs": outs,
+                "balls": balls,
+                "strikes": strikes,
+                "b1_occ": occ[1],
+                "b2_occ": occ[2],
+                "b3_occ": occ[3],
+                "b1_name": runner_names[1],
+                "b2_name": runner_names[2],
+                "b3_name": runner_names[3],
+            }
+
+        return derived
+
     def get_resolved_game_state(self, event_idx):
+        event_id = self.events[event_idx][0]
+        if event_id in self.derived_state_by_event:
+            derived_state = dict(self.derived_state_by_event[event_id])
+            home_score = away_score = None
+            for i in range(event_idx, -1, -1):
+                ev = self.events[i]
+                if home_score is None:
+                    home_score = self.safe_int(ev[14])
+                if away_score is None:
+                    away_score = self.safe_int(ev[15])
+                if home_score is not None and away_score is not None:
+                    break
+            derived_state["home_score"] = home_score if home_score is not None else 0
+            derived_state["away_score"] = away_score if away_score is not None else 0
+            return derived_state
+
         outs = balls = strikes = home_score = away_score = None
         b1_occ = b2_occ = b3_occ = None
         b1_name = b2_name = b3_name = None
@@ -285,6 +397,14 @@ class ReplayDPGQA:
             ev = self.events[i]
             if outs is None:
                 outs = self.safe_int(ev[8])
+            if outs is None and ev[4] in self.pa_state_by_id:
+                pa_state = self.pa_state_by_id[ev[4]]
+                seq = self.safe_int(ev[1])
+                pa_end = pa_state.get("end_seqno")
+                if pa_end is not None and seq is not None and seq >= pa_end:
+                    outs = pa_state.get("outs_after")
+                else:
+                    outs = pa_state.get("outs_before")
             if balls is None:
                 balls = self.safe_int(ev[9])
             if strikes is None:
@@ -310,10 +430,16 @@ class ReplayDPGQA:
 
             if b1_name is None and len(ev) > 16 and ev[16]:
                 b1_name = str(ev[16]).strip()
+            if b1_name is None:
+                b1_name = self.extract_runner_name_from_text(ev[7], 1)
             if b2_name is None and len(ev) > 17 and ev[17]:
                 b2_name = str(ev[17]).strip()
+            if b2_name is None:
+                b2_name = self.extract_runner_name_from_text(ev[7], 2)
             if b3_name is None and len(ev) > 18 and ev[18]:
                 b3_name = str(ev[18]).strip()
+            if b3_name is None:
+                b3_name = self.extract_runner_name_from_text(ev[7], 3)
 
             if all(v is not None for v in [outs, balls, strikes, home_score, away_score, b1_occ, b2_occ, b3_occ]):
                 break
