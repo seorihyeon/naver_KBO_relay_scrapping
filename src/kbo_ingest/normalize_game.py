@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 try:
@@ -19,6 +20,45 @@ from common_utils import first_non_empty, to_int
 BASERUN_KEYWORDS = ("주자", "도루", "진루", "아웃", "홈인", "견제")
 BAT_RESULT_KEYWORDS = ("안타", "홈런", "삼진", "뜬공", "땅볼", "볼넷", "사구", "병살")
 PA_END_KEYWORDS = BAT_RESULT_KEYWORDS + ("아웃", "볼넷", "삼진", "사구")
+
+
+def _extract_runner_name(text: str, base_no: int) -> str | None:
+    if not text:
+        return None
+    m = re.search(rf"{base_no}루주자\s*([^ :]+)", text)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
+def _batter_reached_base(text: str) -> bool:
+    if not text:
+        return False
+    return any(k in text for k in ("볼넷", "고의4구", "몸에 맞는 볼", "안타", "내야안타"))
+
+
+def _apply_baserunner_transition(text: str, runner_name_by_base: dict[int, str | None]) -> None:
+    if not text:
+        return
+    move = re.search(r"([123])루주자\s*([^ :]+)\s*:.*([123])루까지 진루", text)
+    if move:
+        from_base = int(move.group(1))
+        runner_name = move.group(2).strip()
+        to_base = int(move.group(3))
+        runner_name_by_base[from_base] = None
+        runner_name_by_base[to_base] = runner_name
+        return
+
+    home_in = re.search(r"([123])루주자\s*([^ :]+)\s*:.*홈인", text)
+    if home_in:
+        from_base = int(home_in.group(1))
+        runner_name_by_base[from_base] = None
+        return
+
+    out = re.search(r"([123])루주자\s*([^ :]+)\s*:.*아웃", text)
+    if out:
+        from_base = int(out.group(1))
+        runner_name_by_base[from_base] = None
 
 
 @dataclass
@@ -134,9 +174,9 @@ def _fetch_events(cur: psycopg.Cursor, raw_game_id: int) -> list[EventRec]:
                 text=txt,
                 batter_id=str(first_non_empty(cgs.get("batter"), (row[14] or {}).get("batterRecord", {}).get("pcode")) or "") or None,
                 pitcher_id=str(first_non_empty(cgs.get("pitcher")) or "") or None,
-                outs=to_int(first_non_empty(cgs.get("outCount"), cgs.get("outs")), None),
-                balls=to_int(first_non_empty(cgs.get("ballCount"), cgs.get("balls")), None),
-                strikes=to_int(first_non_empty(cgs.get("strikeCount"), cgs.get("strikes")), None),
+                outs=to_int(first_non_empty(cgs.get("out"), cgs.get("outCount"), cgs.get("outs")), None),
+                balls=to_int(first_non_empty(cgs.get("ball"), cgs.get("ballCount"), cgs.get("balls")), None),
+                strikes=to_int(first_non_empty(cgs.get("strike"), cgs.get("strikeCount"), cgs.get("strikes")), None),
                 base1=b1,
                 base2=b2,
                 base3=b3,
@@ -161,6 +201,10 @@ def _is_pa_end(event: EventRec) -> bool:
 
 def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
     with conn.cursor() as cur:
+        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_name TEXT")
+        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_name TEXT")
+        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_name TEXT")
+
         cur.execute("SELECT game_id, home_team_id, away_team_id FROM games WHERE raw_game_id = %s", (raw_game_id,))
         game_row = cur.fetchone()
         if not game_row:
@@ -178,6 +222,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         cur.execute("DELETE FROM innings WHERE game_id = %s", (game_id,))
 
         events = _fetch_events(cur, raw_game_id)
+        cur.execute("SELECT player_id, player_name FROM players")
+        player_name_by_id = {row[0]: row[1] for row in cur.fetchall() if row[0]}
 
         inning_map: dict[tuple[int, str], int] = {}
         pa_counter = 0
@@ -186,6 +232,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_key: tuple[int, str, str | None] | None = None
         current_pa_event_no = 0
         event_id_by_pitch_id: dict[str, int] = {}
+        runner_name_by_base = {1: None, 2: None, 3: None}
 
         for event_seq_game, ev in enumerate(events, start = 1):
             inning_no = ev.inning_no or 0
@@ -243,14 +290,32 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 current_pa_event_no = 0
 
             current_pa_event_no += 1
+            _apply_baserunner_transition(ev.text, runner_name_by_base)
+            has_runner_transition = bool(re.search(r"[123]루주자\s*[^ :]+\s*:.*(까지 진루|홈인|아웃)", ev.text or ""))
+            if not ev.base1:
+                runner_name_by_base[1] = None
+            if not ev.base2:
+                runner_name_by_base[2] = None
+            if not ev.base3:
+                runner_name_by_base[3] = None
+
+            for base_no in (1, 2, 3):
+                if has_runner_transition:
+                    continue
+                parsed_name = _extract_runner_name(ev.text, base_no)
+                if parsed_name:
+                    runner_name_by_base[base_no] = parsed_name
+            if ev.base1 and not runner_name_by_base[1] and _batter_reached_base(ev.text) and ev.batter_id:
+                runner_name_by_base[1] = player_name_by_id.get(ev.batter_id)
+
             cur.execute(
                 """
                 INSERT INTO pa_events (
                     game_id, inning_id, pa_id, event_seq_game, event_seq_in_pa,
                     event_type_code, event_category, text, batter_id, pitcher_id,
                     outs, balls, strikes, base1_occupied, base2_occupied, base3_occupied,
-                    home_score, away_score, raw_event_id, raw_payload
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    home_score, away_score, base1_runner_name, base2_runner_name, base3_runner_name, raw_event_id, raw_payload
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING event_id
                 """,
                 (
@@ -272,6 +337,9 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     ev.base3,
                     ev.home_score,
                     ev.away_score,
+                    runner_name_by_base[1],
+                    runner_name_by_base[2],
+                    runner_name_by_base[3],
                     ev.raw_event_id,
                     Json(ev.raw_payload),
                 ),

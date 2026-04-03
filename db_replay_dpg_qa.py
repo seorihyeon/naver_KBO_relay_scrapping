@@ -373,16 +373,41 @@ class ReplayDPGQA:
         return derived
 
     def get_resolved_game_state(self, event_idx):
-        event_id = self.events[event_idx][0]
+        ev = self.events[event_idx]
+        direct_outs = self.safe_int(ev[8])
+        direct_balls = self.safe_int(ev[9])
+        direct_strikes = self.safe_int(ev[10])
+        direct_b1 = ev[11] if len(ev) > 11 else None
+        direct_b2 = ev[12] if len(ev) > 12 else None
+        direct_b3 = ev[13] if len(ev) > 13 else None
+        direct_n1 = ev[16] if len(ev) > 16 else None
+        direct_n2 = ev[17] if len(ev) > 17 else None
+        direct_n3 = ev[18] if len(ev) > 18 else None
+        if all(v is not None for v in [direct_outs, direct_balls, direct_strikes, direct_b1, direct_b2, direct_b3]):
+            return {
+                "outs": direct_outs,
+                "balls": direct_balls,
+                "strikes": direct_strikes,
+                "home_score": self.safe_int(ev[14]) or 0,
+                "away_score": self.safe_int(ev[15]) or 0,
+                "b1_occ": bool(direct_b1),
+                "b2_occ": bool(direct_b2),
+                "b3_occ": bool(direct_b3),
+                "b1_name": str(direct_n1).strip() if direct_n1 else None,
+                "b2_name": str(direct_n2).strip() if direct_n2 else None,
+                "b3_name": str(direct_n3).strip() if direct_n3 else None,
+            }
+
+        event_id = ev[0]
         if event_id in self.derived_state_by_event:
             derived_state = dict(self.derived_state_by_event[event_id])
             home_score = away_score = None
             for i in range(event_idx, -1, -1):
-                ev = self.events[i]
+                prev_ev = self.events[i]
                 if home_score is None:
-                    home_score = self.safe_int(ev[14])
+                    home_score = self.safe_int(prev_ev[14])
                 if away_score is None:
-                    away_score = self.safe_int(ev[15])
+                    away_score = self.safe_int(prev_ev[15])
                 if home_score is not None and away_score is not None:
                     break
             derived_state["home_score"] = home_score if home_score is not None else 0
