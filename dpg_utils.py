@@ -6,6 +6,9 @@ from pathlib import Path
 import dearpygui.dearpygui as dpg
 from PIL import Image
 
+DPG_UTIL_TEXTURE_REGISTRY = "__dpg_utils_texture_registry"
+TEXTURE_SHAPES = {}
+
 
 def bind_korean_font(size=16, candidates=None):
     if candidates is None:
@@ -29,10 +32,22 @@ def bind_korean_font(size=16, candidates=None):
 
 
 def create_or_replace_dynamic_texture(tex_tag, width, height, rgba_data):
-    with dpg.texture_registry(show=False):
-        if dpg.does_item_exist(tex_tag):
-            dpg.delete_item(tex_tag)
-        dpg.add_dynamic_texture(width, height, rgba_data, tag=tex_tag)
+    if not dpg.does_item_exist(DPG_UTIL_TEXTURE_REGISTRY):
+        dpg.add_texture_registry(tag=DPG_UTIL_TEXTURE_REGISTRY, show=False)
+
+    if dpg.does_item_exist(tex_tag):
+        prev_shape = TEXTURE_SHAPES.get(tex_tag)
+        try:
+            if prev_shape == (width, height):
+                dpg.set_value(tex_tag, rgba_data)
+                return tex_tag
+        except Exception:
+            pass
+
+    new_tag = dpg.generate_uuid()
+    dpg.add_dynamic_texture(width, height, rgba_data, tag=new_tag, parent=DPG_UTIL_TEXTURE_REGISTRY)
+    TEXTURE_SHAPES[new_tag] = (width, height)
+    return new_tag
 
 
 def load_image_pixels(image_path, width, height, base_dir=None):
