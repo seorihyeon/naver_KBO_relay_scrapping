@@ -31,7 +31,8 @@ class ReplayDPGQA:
         self.LEFT_PANEL_RATIO = 0.60
         self.RIGHT_PANEL_RATIO = 0.40
         self.PANEL_MIN_WIDTH = 420
-        self.PANEL_HEIGHT_OFFSET = 160
+        self.TOP_SECTION_HEIGHT = 330
+        self.PANEL_GAP = 20
         self.GRAPHICS_HEIGHT_RATIO = 0.46
         self.RELAY_HEIGHT_RATIO = 0.32
         self.PITCH_TABLE_HEIGHT_RATIO = 0.42
@@ -275,19 +276,26 @@ class ReplayDPGQA:
         vw = dpg.get_viewport_client_width() or self.DEFAULT_VIEWPORT_W
         vh = dpg.get_viewport_client_height() or self.DEFAULT_VIEWPORT_H
 
-        usable_w = max(vw - 40, self.PANEL_MIN_WIDTH * 2)
+        main_w = max(vw - 20, 700)
+        main_h = max(vh - 20, 520)
+
+        usable_w = max(main_w - 20, self.PANEL_MIN_WIDTH * 2)
         left_w = max(int(usable_w * self.LEFT_PANEL_RATIO), self.PANEL_MIN_WIDTH)
-        right_w = max(usable_w - left_w - 20, self.PANEL_MIN_WIDTH)
-        panel_h = max(vh - self.PANEL_HEIGHT_OFFSET, 520)
+        right_w = max(usable_w - left_w - self.PANEL_GAP, self.PANEL_MIN_WIDTH)
 
-        image_w = max(left_w - 40, 480)
-        image_h = max(int(panel_h * self.GRAPHICS_HEIGHT_RATIO), 240)
-        relay_h = max(int(panel_h * self.RELAY_HEIGHT_RATIO), 200)
+        top_h = min(self.TOP_SECTION_HEIGHT, max(int(main_h * 0.45), 250))
+        panel_h = max(main_h - top_h, 320)
 
-        pitch_h = max(int(panel_h * self.PITCH_TABLE_HEIGHT_RATIO), 180)
-        warning_h = max(int(panel_h * self.WARNING_TABLE_HEIGHT_RATIO), 200)
+        image_w = max(left_w - 40, 420)
+        image_h = max(int(panel_h * self.GRAPHICS_HEIGHT_RATIO), 180)
+        relay_h = max(int(panel_h * self.RELAY_HEIGHT_RATIO), 120)
+
+        pitch_h = max(int(panel_h * self.PITCH_TABLE_HEIGHT_RATIO), 140)
+        warning_h = max(int(panel_h * self.WARNING_TABLE_HEIGHT_RATIO), 160)
 
         return {
+            "main_w": main_w,
+            "main_h": main_h,
             "left_w": left_w,
             "right_w": right_w,
             "panel_h": panel_h,
@@ -571,8 +579,8 @@ class ReplayDPGQA:
         if dpg.does_item_exist("main_window"):
             dpg.configure_item(
                 "main_window",
-                width=max((dpg.get_viewport_client_width() or self.DEFAULT_VIEWPORT_W) - 20, 700),
-                height=max((dpg.get_viewport_client_height() or self.DEFAULT_VIEWPORT_H) - 20, 520),
+                width=dims["main_w"],
+                height=dims["main_h"],
             )
 
         if dpg.does_item_exist("left_panel"):
@@ -630,7 +638,7 @@ class ReplayDPGQA:
             dpg.add_separator()
             with dpg.group(horizontal=True):
                 # 좌측: 그래픽 + 문자중계
-                with dpg.child_window(tag="left_panel", width=820, height=780, border=True):
+                with dpg.child_window(tag="left_panel", width=820, height=600, border=True, horizontal_scrollbar=True):
                     dpg.add_text("그래픽 뷰 (야구장 배경 + 오버레이)")
                     dpg.add_image(self.tex_tag, tag="stadium_image", width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
                     dpg.add_drawlist(tag=self.overlay_drawlist_tag, width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
@@ -654,7 +662,7 @@ class ReplayDPGQA:
                     dpg.add_input_text(tag="relay_text", multiline=True, readonly=True, width=self.BASE_IMAGE_W, height=350)
 
                 # 우측: 투구 하이라이트 + 경고패널
-                with dpg.child_window(tag="right_panel", width=550, height=780, border=True):
+                with dpg.child_window(tag="right_panel", width=550, height=600, border=True):
                     dpg.add_text("연관 투구 자동 하이라이트 (현재 event_id 기준)")
                     with dpg.table(header_row=False, tag="pitch_table",
                                    policy=dpg.mvTable_SizingStretchProp,
