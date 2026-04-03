@@ -44,15 +44,10 @@ def create_or_replace_dynamic_texture(tex_tag, width, height, rgba_data):
         except Exception:
             pass
 
-        try:
-            dpg.delete_item(tex_tag)
-            TEXTURE_SHAPES.pop(tex_tag, None)
-        except Exception:
-            tex_tag = f"{tex_tag}_{width}x{height}"
-
-    dpg.add_dynamic_texture(width, height, rgba_data, tag=tex_tag, parent=DPG_UTIL_TEXTURE_REGISTRY)
-    TEXTURE_SHAPES[tex_tag] = (width, height)
-    return tex_tag
+    new_tag = dpg.generate_uuid()
+    dpg.add_dynamic_texture(width, height, rgba_data, tag=new_tag, parent=DPG_UTIL_TEXTURE_REGISTRY)
+    TEXTURE_SHAPES[new_tag] = (width, height)
+    return new_tag
 
 
 def load_image_pixels(image_path, width, height, base_dir=None):
