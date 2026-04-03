@@ -3,12 +3,22 @@ from __future__ import annotations
 import dearpygui.dearpygui as dpg
 import psycopg
 import re
+import json
+import os
+import subprocess
 from pathlib import Path
 
 from dpg_utils import bind_korean_font, create_or_replace_dynamic_texture, load_image_pixels
+from src.kbo_ingest.pipeline import load_one_game
 
 class ReplayDPGQA:
     def __init__(self):
+        self.config = self.load_app_config()
+        self.default_dsn = self.config.get("db", {}).get("dsn", "postgresql://HOST:PASSWORD@HOST:5432/DBNAME")
+        self.default_image_path = self.config.get("paths", {}).get("image_path", "assets/stadium.png")
+        self.default_data_dir = self.config.get("paths", {}).get("json_data_dir", "example")
+        self.default_schema_path = self.config.get("paths", {}).get("schema_path", "sql/schema.sql")
+
         self.conn = None
         self.games = []  # [(game_id, label)]
         self.game_id = None
@@ -65,6 +75,22 @@ class ReplayDPGQA:
         self.overlay_positions = self.overlay_positions_base.copy()
         self.status_logs = []
 
+    def load_app_config(self):
+        cfg_env = os.environ.get("KBO_APP_CONFIG")
+        candidates = []
+        if cfg_env:
+            candidates.append(Path(cfg_env))
+        candidates.append(Path(__file__).resolve().parent / "config" / "app_config.json")
+
+        for cfg_path in candidates:
+            if not cfg_path.exists():
+                continue
+            try:
+                return json.loads(cfg_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+        return {}
+
     def set_status(self, summary, detail=None, append=False):
         if dpg.does_item_exist("status_text"):
             dpg.set_value("status_text", summary)
@@ -92,6 +118,52 @@ class ReplayDPGQA:
         except Exception as e:
             self.set_status("DB 연결 실패", "사용자 메시지: DSN/네트워크/DB 상태를 확인하세요.", append=False)
             self.set_status("DB 연결 실패", f"디버그 예외: {e}", append=True)
+
+    def ingest_json_to_db(self):
+        if not self.conn:
+            self.set_status("적재 실패", "먼저 DB 연결을 진행하세요.")
+            return
+
+        data_dir = Path(dpg.get_value("json_data_dir_input")).expanduser()
+        if not data_dir.exists():
+            self.set_status("적재 실패", f"데이터 디렉터리를 찾을 수 없습니다: {data_dir}")
+            return
+
+        loaded = 0
+        try:
+            for json_path in sorted(data_dir.rglob("*.json")):
+                load_one_game(self.conn, json_path)
+                loaded += 1
+            self.set_status("적재 완료", f"JSON 적재 완료: {loaded}개 파일", append=True)
+            self.load_games()
+        except Exception as e:
+            self.set_status("적재 실패", f"적재 중 오류: {e}", append=True)
+
+    def create_schema(self):
+        if not self.conn:
+            self.set_status("스키마 생성 실패", "먼저 DB 연결을 진행하세요.")
+            return
+        schema_path = Path(dpg.get_value("schema_path_input")).expanduser()
+        if not schema_path.exists():
+            self.set_status("스키마 생성 실패", f"스키마 파일을 찾을 수 없습니다: {schema_path}")
+            return
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(schema_path.read_text(encoding="utf-8"))
+            self.set_status("스키마 생성 완료", f"스키마 반영: {schema_path}", append=True)
+        except Exception as e:
+            self.set_status("스키마 생성 실패", str(e), append=True)
+
+    def launch_collection_gui(self):
+        script_path = Path(__file__).resolve().parent / "graphic_interface.py"
+        if not script_path.exists():
+            self.set_status("수집 GUI 실행 실패", f"파일 없음: {script_path}")
+            return
+        try:
+            subprocess.Popen(["python", str(script_path)])
+            self.set_status("수집 GUI 실행", "별도 창에서 수집 GUI를 실행했습니다.", append=True)
+        except Exception as e:
+            self.set_status("수집 GUI 실행 실패", str(e), append=True)
 
     def load_games(self):
         q = """
@@ -961,8 +1033,17 @@ class ReplayDPGQA:
         with dpg.window(tag="main_window", label="KBO DB Replay QA", width=self.DEFAULT_VIEWPORT_W - 40, height=self.DEFAULT_VIEWPORT_H - 60):
             with dpg.group(horizontal=True):
                 dpg.add_text("DSN")
-                dpg.add_input_text(tag="dsn_input", width=900, default_value="postgresql://HOST:PASSWORD@HOST:5432/DBNAME")
+                dpg.add_input_text(tag="dsn_input", width=900, default_value=self.default_dsn)
                 dpg.add_button(label="DB 연결", callback=lambda: self.connect_db())
+                dpg.add_button(label="수집 GUI 실행", callback=lambda: self.launch_collection_gui())
+
+            with dpg.group(horizontal=True):
+                dpg.add_text("JSON 경로")
+                dpg.add_input_text(tag="json_data_dir_input", width=520, default_value=self.default_data_dir)
+                dpg.add_text("스키마")
+                dpg.add_input_text(tag="schema_path_input", width=260, default_value=self.default_schema_path)
+                dpg.add_button(label="스키마 생성", callback=lambda: self.create_schema())
+                dpg.add_button(label="JSON 적재", callback=lambda: self.ingest_json_to_db())
 
             with dpg.group(horizontal=True):
                 dpg.add_combo(tag="game_combo", items=[], width=900)
@@ -970,7 +1051,7 @@ class ReplayDPGQA:
                 dpg.add_button(label="경고 재검사", callback=lambda: self.refresh_warning_panel())
 
             with dpg.group(horizontal=True):
-                dpg.add_input_text(tag="img_path", width=700, default_value="assets/stadium.png")
+                dpg.add_input_text(tag="img_path", width=700, default_value=self.default_image_path)
                 dpg.add_button(
                     label="배경 이미지 적용",
                     callback=lambda: self.load_stadium_texture(dpg.get_value("img_path"))

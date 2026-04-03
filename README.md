@@ -21,6 +21,20 @@ python postgres_loader.py \
   --create-schema
 ```
 
+### 통합 GUI 실행 (수집/적재/리플레이)
+
+`db_replay_dpg_qa.py`에서 하나의 GUI에서 아래 기능을 실행할 수 있습니다.
+
+- DSN/경로를 외부 설정 파일(`config/app_config.json`)에서 로드
+- 스키마 생성
+- JSON 디렉터리 적재
+- 리플레이 QA
+- 수집 GUI 실행 버튼 제공
+
+```bash
+python db_replay_dpg_qa.py
+```
+
 ### 생성/사용 테이블
 
 - `raw_games`: 원본 JSON 저장
