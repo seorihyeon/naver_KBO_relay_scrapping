@@ -37,6 +37,7 @@ class ReplayDPGQA:
         self.RIGHT_FIXED_HEIGHT = 90
         self.BASE_IMAGE_W = 780
         self.BASE_IMAGE_H = 360
+        self.BASE_IMAGE_RATIO = self.BASE_IMAGE_W / self.BASE_IMAGE_H
 
         self.tex_tag = "stadium_tex"
         self.pa_event_columns = None
@@ -564,16 +565,27 @@ class ReplayDPGQA:
             dpg.set_value("status_text", f"배경 이미지 로드 실패: {e}")
 
     def resize_graphics_surface(self, width, height):
-        width = max(int(width), 200)
-        height = max(int(height), 120)
+        box_w = max(int(width), 200)
+        box_h = max(int(height), 120)
 
-        self.overlay_positions = self.compute_overlay_positions(width, height)
-        self.create_placeholder_texture(width, height)
+        ratio_from_box = box_w / max(box_h, 1)
+        if ratio_from_box > self.BASE_IMAGE_RATIO:
+            render_h = box_h
+            render_w = int(render_h * self.BASE_IMAGE_RATIO)
+        else:
+            render_w = box_w
+            render_h = int(render_w / self.BASE_IMAGE_RATIO)
+
+        render_w = max(render_w, 200)
+        render_h = max(render_h, 120)
+
+        self.overlay_positions = self.compute_overlay_positions(render_w, render_h)
+        self.create_placeholder_texture(render_w, render_h)
 
         if dpg.does_item_exist("stadium_image"):
-            dpg.configure_item("stadium_image", texture_tag=self.tex_tag, width=width, height=height)
+            dpg.configure_item("stadium_image", texture_tag=self.tex_tag, width=render_w, height=render_h)
         if dpg.does_item_exist(self.overlay_drawlist_tag):
-            dpg.configure_item(self.overlay_drawlist_tag, width=width, height=height)
+            dpg.configure_item(self.overlay_drawlist_tag, width=render_w, height=render_h)
 
         if self.current_image_path:
             self.load_stadium_texture(self.current_image_path)
@@ -595,7 +607,7 @@ class ReplayDPGQA:
         self.resize_graphics_surface(dims["image_w"], dims["image_h"])
 
         if dpg.does_item_exist("event_slider"):
-            dpg.configure_item("event_slider", width=dims["image_w"])
+            dpg.configure_item("event_slider", width=max(dims["image_w"] - 20, 260))
         if dpg.does_item_exist("relay_text"):
             dpg.configure_item("relay_text", width=dims["image_w"], height=dims["relay_h"])
 
@@ -648,7 +660,8 @@ class ReplayDPGQA:
                     dpg.add_drawlist(tag=self.overlay_drawlist_tag, width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
 
                     dpg.add_separator()
-                    dpg.add_slider_int(tag="event_slider", label="이벤트 인덱스", width=self.BASE_IMAGE_W, min_value=0, max_value=0, default_value=0, enabled=False, callback=self.on_event_slider_change)
+                    dpg.add_text("이벤트 인덱스")
+                    dpg.add_slider_int(tag="event_slider", label="", width=self.BASE_IMAGE_W - 20, min_value=0, max_value=0, default_value=0, enabled=False, callback=self.on_event_slider_change)
                     with dpg.group(horizontal=True):
                         dpg.add_input_int(tag="event_jump_input", label="점프", width=160, default_value=0, min_value=0, min_clamped=True, step=1, step_fast=10)
                         dpg.add_button(label="이벤트 점프", callback=lambda: self.jump_to_event_index())
