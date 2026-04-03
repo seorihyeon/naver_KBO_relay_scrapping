@@ -28,13 +28,25 @@ def _extract_runner_name(text: str, base_no: int) -> str | None:
     m = re.search(rf"{base_no}루주자\s*([^ :]+)", text)
     if m:
         return m.group(1).strip()
+    if base_no == 1:
+        batter_runner = re.search(r"타자주자\s*([^ :]+)", text)
+        if batter_runner:
+            return batter_runner.group(1).strip()
     return None
 
 
-def _batter_reached_base(text: str) -> bool:
+def _batter_reached_base(text: str) -> int | None:
     if not text:
-        return False
-    return any(k in text for k in ("볼넷", "고의4구", "몸에 맞는 볼", "안타", "내야안타"))
+        return None
+    if "홈런" in text:
+        return None
+    if "3루타" in text:
+        return 3
+    if "2루타" in text:
+        return 2
+    if any(k in text for k in ("1루타", "내야안타", "안타", "볼넷", "고의4구", "몸에 맞는 볼", "출루", "타자주자")):
+        return 1
+    return None
 
 
 def _apply_baserunner_transition(text: str, runner_name_by_base: dict[int, str | None]) -> None:
@@ -316,8 +328,11 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 parsed_name = _extract_runner_name(ev.text, base_no)
                 if parsed_name:
                     runner_name_by_base[base_no] = parsed_name
-            if ev.base1 and not runner_name_by_base[1] and _batter_reached_base(ev.text) and ev.batter_id:
-                runner_name_by_base[1] = player_name_by_id.get(ev.batter_id)
+            batter_reach_base = _batter_reached_base(ev.text)
+            if batter_reach_base and ev.batter_id:
+                batter_name = player_name_by_id.get(ev.batter_id)
+                if batter_name:
+                    runner_name_by_base[batter_reach_base] = batter_name
 
             cur.execute(
                 """

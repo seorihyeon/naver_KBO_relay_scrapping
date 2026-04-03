@@ -304,6 +304,17 @@ class ReplayDPGQA:
 
         return None
 
+    def normalize_runner_name(self, name):
+        if name is None:
+            return None
+        txt = str(name).strip()
+        if txt in {"", "-", "주자", "-주자"}:
+            return None
+        txt = re.sub(r"^[123]루주자\\s*", "", txt).strip()
+        if txt in {"", "-", "주자"}:
+            return None
+        return txt
+
     def build_derived_state_map(self):
         derived = {}
         balls, strikes, outs = 0, 0, 0
@@ -400,14 +411,17 @@ class ReplayDPGQA:
                 "b1_occ": bool(direct_b1),
                 "b2_occ": bool(direct_b2),
                 "b3_occ": bool(direct_b3),
-                "b1_name": str(direct_n1).strip() if direct_n1 else None,
-                "b2_name": str(direct_n2).strip() if direct_n2 else None,
-                "b3_name": str(direct_n3).strip() if direct_n3 else None,
+                "b1_name": self.normalize_runner_name(direct_n1),
+                "b2_name": self.normalize_runner_name(direct_n2),
+                "b3_name": self.normalize_runner_name(direct_n3),
             }
 
         event_id = ev[0]
         if event_id in self.derived_state_by_event:
             derived_state = dict(self.derived_state_by_event[event_id])
+            derived_state["b1_name"] = self.normalize_runner_name(derived_state.get("b1_name"))
+            derived_state["b2_name"] = self.normalize_runner_name(derived_state.get("b2_name"))
+            derived_state["b3_name"] = self.normalize_runner_name(derived_state.get("b3_name"))
             home_score = away_score = None
             for i in range(event_idx, -1, -1):
                 prev_ev = self.events[i]
@@ -485,9 +499,9 @@ class ReplayDPGQA:
             "b1_occ": b1_occ if b1_occ is not None else False,
             "b2_occ": b2_occ if b2_occ is not None else False,
             "b3_occ": b3_occ if b3_occ is not None else False,
-            "b1_name": b1_name,
-            "b2_name": b2_name,
-            "b3_name": b3_name,
+            "b1_name": self.normalize_runner_name(b1_name),
+            "b2_name": self.normalize_runner_name(b2_name),
+            "b3_name": self.normalize_runner_name(b3_name),
         }
 
     def compute_overlay_positions(self, image_w, image_h):
