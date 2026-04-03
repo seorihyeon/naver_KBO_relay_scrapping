@@ -33,10 +33,8 @@ class ReplayDPGQA:
         self.PANEL_MIN_WIDTH = 420
         self.TOP_SECTION_HEIGHT = 330
         self.PANEL_GAP = 20
-        self.GRAPHICS_HEIGHT_RATIO = 0.46
-        self.RELAY_HEIGHT_RATIO = 0.32
-        self.PITCH_TABLE_HEIGHT_RATIO = 0.42
-        self.WARNING_TABLE_HEIGHT_RATIO = 0.50
+        self.LEFT_FIXED_HEIGHT = 190
+        self.RIGHT_FIXED_HEIGHT = 90
         self.BASE_IMAGE_W = 780
         self.BASE_IMAGE_H = 360
 
@@ -252,6 +250,9 @@ class ReplayDPGQA:
         except Exception:
             return None
 
+    def clamp(self, value, min_value, max_value):
+        return max(min_value, min(int(value), max_value))
+
     def current_event_id(self):
         if not self.events:
             return None
@@ -284,14 +285,17 @@ class ReplayDPGQA:
         right_w = max(usable_w - left_w - self.PANEL_GAP, self.PANEL_MIN_WIDTH)
 
         top_h = min(self.TOP_SECTION_HEIGHT, max(int(main_h * 0.45), 250))
-        panel_h = max(main_h - top_h, 320)
+        panel_h = max(main_h - top_h, 340)
 
         image_w = max(left_w - 40, 420)
-        image_h = max(int(panel_h * self.GRAPHICS_HEIGHT_RATIO), 180)
-        relay_h = max(int(panel_h * self.RELAY_HEIGHT_RATIO), 120)
 
-        pitch_h = max(int(panel_h * self.PITCH_TABLE_HEIGHT_RATIO), 140)
-        warning_h = max(int(panel_h * self.WARNING_TABLE_HEIGHT_RATIO), 160)
+        left_available = max(panel_h - self.LEFT_FIXED_HEIGHT, 240)
+        relay_h = self.clamp(left_available * 0.30, 90, 170)
+        image_h = self.clamp((left_available - relay_h) / 2, 120, 230)
+
+        right_available = max(panel_h - self.RIGHT_FIXED_HEIGHT, 220)
+        pitch_h = self.clamp(right_available * 0.45, 120, 260)
+        warning_h = self.clamp(right_available - pitch_h, 120, 320)
 
         return {
             "main_w": main_w,
@@ -638,7 +642,7 @@ class ReplayDPGQA:
             dpg.add_separator()
             with dpg.group(horizontal=True):
                 # 좌측: 그래픽 + 문자중계
-                with dpg.child_window(tag="left_panel", width=820, height=600, border=True, horizontal_scrollbar=True):
+                with dpg.child_window(tag="left_panel", width=820, height=600, border=True):
                     dpg.add_text("그래픽 뷰 (야구장 배경 + 오버레이)")
                     dpg.add_image(self.tex_tag, tag="stadium_image", width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
                     dpg.add_drawlist(tag=self.overlay_drawlist_tag, width=self.BASE_IMAGE_W, height=self.BASE_IMAGE_H)
