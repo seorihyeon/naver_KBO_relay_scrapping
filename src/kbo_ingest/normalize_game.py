@@ -272,6 +272,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_key: tuple[int, str, str | None] | None = None
         current_pa_event_no = 0
         event_id_by_pitch_id: dict[str, int] = {}
+        last_event_by_pa: dict[int, int] = {}
         runner_name_by_base = {1: None, 2: None, 3: None}
         runner_id_by_base = {1: None, 2: None, 3: None}
 
@@ -399,6 +400,61 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 ),
             )
             pa_event_id = cur.fetchone()[0]
+
+            prev_pa_event_id = last_event_by_pa.get(current_pa_id)
+            if (
+                ev.category == "baserunning"
+                and prev_pa_event_id
+                and prev_pa_event_id != pa_event_id
+                and any(k in (ev.text or "") for k in ("진루", "홈인", "아웃"))
+            ):
+                # 같은 PA 내 연결 이벤트(타구 결과 + 주루 후속)는 결과 상태를 이전 이벤트에도 반영
+                cur.execute(
+                    """
+                    SELECT base1_runner_id, base2_runner_id, base3_runner_id,
+                           base1_runner_name, base2_runner_name, base3_runner_name
+                    FROM pa_events
+                    WHERE event_id = %s
+                    """,
+                    (prev_pa_event_id,),
+                )
+                prev_runner = cur.fetchone() or (None, None, None, None, None, None)
+                merged_id_1 = runner_id_by_base[1] if runner_id_by_base[1] else (prev_runner[0] if ev.base1 else None)
+                merged_id_2 = runner_id_by_base[2] if runner_id_by_base[2] else (prev_runner[1] if ev.base2 else None)
+                merged_id_3 = runner_id_by_base[3] if runner_id_by_base[3] else (prev_runner[2] if ev.base3 else None)
+                merged_name_1 = runner_name_by_base[1] if runner_name_by_base[1] else (prev_runner[3] if ev.base1 else None)
+                merged_name_2 = runner_name_by_base[2] if runner_name_by_base[2] else (prev_runner[4] if ev.base2 else None)
+                merged_name_3 = runner_name_by_base[3] if runner_name_by_base[3] else (prev_runner[5] if ev.base3 else None)
+
+                cur.execute(
+                    """
+                    UPDATE pa_events
+                    SET base1_occupied = %s,
+                        base2_occupied = %s,
+                        base3_occupied = %s,
+                        base1_runner_id = %s,
+                        base2_runner_id = %s,
+                        base3_runner_id = %s,
+                        base1_runner_name = %s,
+                        base2_runner_name = %s,
+                        base3_runner_name = %s
+                    WHERE event_id = %s
+                    """,
+                    (
+                        ev.base1,
+                        ev.base2,
+                        ev.base3,
+                        merged_id_1,
+                        merged_id_2,
+                        merged_id_3,
+                        merged_name_1,
+                        merged_name_2,
+                        merged_name_3,
+                        prev_pa_event_id,
+                    ),
+                )
+
+            last_event_by_pa[current_pa_id] = pa_event_id
 
             if ev.pts_pitch_id:
                 event_id_by_pitch_id[ev.pts_pitch_id] = pa_event_id
