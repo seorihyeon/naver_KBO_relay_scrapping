@@ -41,14 +41,17 @@ class KBOIntegratedDPGApp:
 
         with dpg.window(
             tag="global_db_window",
-            label="공통 DB 연결",
+            label="global_db_window",
             width=self.default_viewport_w - 20,
             height=130,
             pos=(10, 10),
             no_resize=True,
             no_move=True,
+            no_title_bar=True,
+            no_collapse=True,
         ):
-            dpg.add_text("공통 DB 연결", color=(120, 180, 255))
+            dpg.add_text("🧩 공통 DB 연결 패널", color=(120, 180, 255))
+            dpg.add_separator()
             with dpg.group(horizontal=True):
                 dpg.add_text("DSN")
                 dpg.add_input_text(tag="dsn_input", width=900, default_value=self.state.default_dsn)
@@ -72,14 +75,17 @@ class KBOIntegratedDPGApp:
 
         with dpg.window(
             tag="global_alert_window",
-            label="전역 알림",
+            label="global_alert_window",
             width=self.default_viewport_w - 20,
             height=240,
             pos=(10, self.default_viewport_h - 250),
             no_resize=True,
             no_move=True,
+            no_title_bar=True,
+            no_collapse=True,
         ):
-            dpg.add_text("전역 알림 패널", color=(120, 255, 160))
+            dpg.add_text("🔔 전역 알림 패널", color=(120, 255, 160))
+            dpg.add_separator()
             dpg.add_input_text(tag="global_notification_text", multiline=True, readonly=True, width=-1, height=120)
             with dpg.group(horizontal=True):
                 dpg.add_button(label="최근 오류 다시 보기 (F8)", callback=lambda: self.state.show_recent_error())
