@@ -1,22 +1,45 @@
 import datetime
 import json
 import os
+import time
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 # Selenium을 이용해 스크래핑을 수행하는 클래스
 class Scrapper:
-    def __init__(self, wait=10, path="games", headless=True):
+    NAVER_MOBILE_BASE_URL = "https://m.sports.naver.com"
+    NAVER_API_BASE_URL = "https://api-gw.sports.naver.com/schedule/games"
+    DEFAULT_USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0"
+    )
+    DEFAULT_API_REQUEST_INTERVAL = 0.25
+
+    def __init__(self, wait=10, path="games", headless=True, api_request_interval=None):
         self.playwright = sync_playwright().start()
-        self.browser = self.playwright.chromium.launch(headless=headless, args=["--no-sandbox"])
+        try:
+            self.browser = self.playwright.chromium.launch(headless=headless, args=["--no-sandbox"])
+        except Exception as e:
+            self.playwright.stop()
+            raise RuntimeError(
+                "Playwright browser launch failed. "
+                "Run `playwright install chromium` or provide a valid browser runtime."
+            ) from e
         self.context = self.browser.new_context(
-            user_agent=('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                        'AppleWebKit/537.36 (KHTML, like Gecko) '
-                        'Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0')
+            user_agent=self.DEFAULT_USER_AGENT
         )
         self.page = self.context.new_page()
         self.driver = self.page
         self.DEFAULT_TIMEOUT = wait
+        self.api_request_interval = (
+            self.DEFAULT_API_REQUEST_INTERVAL
+            if api_request_interval is None
+            else max(0.0, float(api_request_interval))
+        )
+        self._last_api_request_finished_at = None
         self.page.set_default_timeout(wait * 1000)
 
         try:
@@ -25,8 +48,6 @@ class Scrapper:
         except OSError as e:
             print(f"Error creating directory: {e}")
         self.path = './' + path + '/'
-
-        self.page.goto("https://m.sports.naver.com/kbaseball/schedule/index")
 
     def close(self):
         try:
@@ -43,6 +64,31 @@ class Scrapper:
             target = self.page.locator(target)
         return target.locator(css) if css else target
 
+    def _build_api_headers(self, referer_url=None):
+        return {
+            "User-Agent": self.DEFAULT_USER_AGENT,
+            "Referer": referer_url or self.NAVER_MOBILE_BASE_URL,
+        }
+
+    def _throttle_api_request(self):
+        if self.api_request_interval <= 0 or self._last_api_request_finished_at is None:
+            return
+
+        elapsed = time.monotonic() - self._last_api_request_finished_at
+        remaining = self.api_request_interval - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def fetch_game_endpoint(self, game_id, endpoint, referer_url=None):
+        api_url = f"{self.NAVER_API_BASE_URL}/{game_id}/{endpoint}"
+        request = Request(api_url, headers=self._build_api_headers(referer_url))
+        self._throttle_api_request()
+        try:
+            with urlopen(request, timeout=max(10, getattr(self, 'DEFAULT_TIMEOUT', 10))) as response:
+                return json.load(response)
+        finally:
+            self._last_api_request_finished_at = time.monotonic()
+
     # 버튼 클릭
     def click(self, button):
         button.click(timeout=getattr(self, 'DEFAULT_TIMEOUT', 10) * 1000)
@@ -50,10 +96,6 @@ class Scrapper:
     # CSS_SELECTOR로 요소 찾기
     def find_element_css(self, parent, query):
         return self._to_locator(parent, query).first
-
-    # backward compatibility
-    def find_element_CSSS(self, parent, query):
-        return self.find_element_css(parent, query)
     
     # 대기용 함수
     def wait_present(self, css, timeout = None, root = None, min_count = 1, visible = True, fresh = True):
@@ -84,69 +126,9 @@ class Scrapper:
         return [locator.nth(i) for i in range(locator.count())]
 
     def wait_all_present(self, css, timeout = None):
-        return self.wait_present(css, timeout=timeout, min_count=1, visible=False)
-    
-    def wait_clickable_css(self, css, timeout = None):
-        return self.wait_present(css, timeout=timeout, min_count=1, visible=True)
-    
-    def wait_for_request(self, keyword, key_attr, timeout = None, retries = 3, refresh = True, clear_before = True, ready_css = None):
-        t_ms = (timeout or getattr(self, 'DEFAULT_TIMEOUT', 10)) * 1000
-
-        def _predicate(resp):
-            url = resp.url or ""
-            return keyword in url and resp.status >= 200
-
-        attempt = 0
-        while True:
-            try:
-                return self.page.wait_for_response(_predicate, timeout=t_ms)
-            except PlaywrightTimeoutError:
-                if attempt >= retries:
-                    raise
-                attempt += 1
-
-                if refresh:
-                    try:
-                        self.page.reload()
-                    except Exception:
-                        pass
-
-                if ready_css:
-                    try:
-                        self.wait_present(ready_css)
-                    except Exception:
-                        pass
-                
-    # 경기 페이지 내에서 탭 이동 버튼 찾기
-    def find_tab_button(self, timeout = None, retry = 3):
-        tab_css = 'ul[class^="GameTab_tab_list"]'
-        self.wait_present(tab_css, visible=True)
-        
-        for _ in range(retry):
-            try:
-                tab_list = self.find_element_css(self.page, tab_css)
-                tab_buttons = tab_list.locator('button')
-        
-                tab_button_dict = dict()
-                
-                for i in range(tab_buttons.count()):
-                    btn = tab_buttons.nth(i)
-                    text = self.find_element_css(btn, 'span[class^="GameTab_text"]').inner_text()
-                    tab_button_dict[text.strip()] = btn
-                
-                if tab_button_dict:
-                    return tab_button_dict
-            except Exception:
-                continue
-        return {}
-
-    # 중계 페이지 내에서 이닝 버튼 찾기
-    def find_inning_button(self):
-        main_section = self.find_element_css(self.page, 'div[class^="Home_main_section"]')
-        game_panel = self.find_element_css(main_section, 'section[class^="Home_game_panel"]')
-        tab_list = self.find_element_css(game_panel, 'div[class^="SetTab_tab_list"]')
-        inning_buttons = tab_list.locator('button:enabled')
-        return [inning_buttons.nth(i) for i in range(inning_buttons.count())]
+        self.wait_present(css, timeout=timeout, min_count=1, visible=False)
+        locator = self._to_locator(None, css)
+        return [locator.nth(i) for i in range(locator.count())]
     
     # 이닝 데이터 전처리
     def preprocess_inning_data(self, inning_data):
@@ -155,18 +137,24 @@ class Scrapper:
 
         return processed_data
     
-    # HTML request를 통해 이닝 데이터 취득
-    def get_inning_data(self, relay_btn):
-        self.click(relay_btn)
-        self.wait_all_present('section[class^="Home_game_panel"] div[class^="SetTab_tab_list"] button')
-        inning_buttons = self.find_inning_button()
+    def get_inning_count(self, relay_data):
+        inning_score = relay_data.get("result", {}).get("textRelayData", {}).get("inningScore", {})
+        inning_keys = set()
+
+        for side in ("home", "away"):
+            inning_keys.update(str(k) for k in (inning_score.get(side) or {}).keys())
+
+        return max((int(key) for key in inning_keys if str(key).isdigit()), default=0)
+
+    # API request를 통해 이닝 데이터 취득
+    def get_inning_data(self, game_id, referer_url=None):
+        summary = self.fetch_game_endpoint(game_id, "relay", referer_url=referer_url)
         inning_data = []
-        for btn in inning_buttons:
-            with self.page.expect_response(lambda r: "inning" in (r.url or ""), timeout=self.DEFAULT_TIMEOUT * 1000) as resp_info:
-                self.click(btn)
-            resp = resp_info.value
-            body = resp.text()
-            inning_data.append(self.preprocess_inning_data(json.loads(body)) if body else [])
+
+        for inning in range(1, self.get_inning_count(summary) + 1):
+            relay_data = self.fetch_game_endpoint(game_id, f"relay?inning={inning}", referer_url=referer_url)
+            inning_data.append(self.preprocess_inning_data(relay_data))
+
         return inning_data
     
     # 라인업 데이터 전처리
@@ -185,14 +173,10 @@ class Scrapper:
         
         return processed_data
 
-    # HTML request를 통해 선수 라인업 데이터 취득
-    def get_lineup_data(self, lineup_btn):
-        with self.page.expect_response(lambda r: "preview" in (r.url or ""), timeout=self.DEFAULT_TIMEOUT * 1000) as resp_info:
-            self.click(lineup_btn)
-        body = resp_info.value.text()
-        lineup_data = self.preprocess_lineup_data(json.loads(body)) if body else {}
-        
-        return lineup_data
+    # API request를 통해 선수 라인업 데이터 취득
+    def get_lineup_data(self, game_id, referer_url=None):
+        lineup_data = self.fetch_game_endpoint(game_id, "preview", referer_url=referer_url)
+        return self.preprocess_lineup_data(lineup_data) if lineup_data else {}
     
     # 경기 기록 데이터 전처리
     def preprocess_record_data(self, record_data):
@@ -203,24 +187,30 @@ class Scrapper:
         
         return processed_data
 
-    # HTML request를 통해 경기 기록 데이터 취득
-    def get_record_data(self, result_btn):
-        with self.page.expect_response(lambda r: "record" in (r.url or ""), timeout=self.DEFAULT_TIMEOUT * 1000) as resp_info:
-            self.click(result_btn)
-        body = resp_info.value.text()
-        record_data = self.preprocess_record_data(json.loads(body)) if body else {}
-        
-        return record_data
+    # API request를 통해 경기 기록 데이터 취득
+    def get_record_data(self, game_id, referer_url=None):
+        record_data = self.fetch_game_endpoint(game_id, "record", referer_url=referer_url)
+        return self.preprocess_record_data(record_data) if record_data else {}
 
     # 경기 중계 url을 받아 필요한 데이터를 긁어서 반환
     def get_game_data(self, game_url):
-        self.page.goto(game_url)
-        tab_buttons = self.find_tab_button()
-        lineup_data = self.get_lineup_data(tab_buttons["라인업"])
-        inning_data = self.get_inning_data(tab_buttons["중계"])
-        record_data = self.get_record_data(tab_buttons["기록"])
+        normalized_url = self.normalize_game_url(game_url)
+        game_id = self.extract_game_id(normalized_url)
+
+        lineup_data = self.get_lineup_data(game_id, referer_url=normalized_url)
+        inning_data = self.get_inning_data(game_id, referer_url=f"{normalized_url}/relay")
+        record_data = self.get_record_data(game_id, referer_url=f"{normalized_url}/record")
 
         return lineup_data, inning_data, record_data
+
+    @classmethod
+    def normalize_game_url(cls, game_url):
+        return urljoin(cls.NAVER_MOBILE_BASE_URL, str(game_url or "").strip())
+
+    @classmethod
+    def extract_game_id(cls, game_url):
+        path = cls.normalize_game_url(game_url).split("/game/", 1)[-1]
+        return path.split("/", 1)[0]
         
     # 활성화 된 날짜 목록 반환
     def get_activated_dates(self):
@@ -271,7 +261,7 @@ class Scrapper:
         """
         self.page.goto(self.get_schedule_page_url(year, month, date))
         try:
-            self.wait_all_present('div[class^="ScheduleAllType_match_list_group"]')
+            self.wait_all_present('div[class^="ScheduleAllType_match_list_group"]', timeout=soft_timeout)
         except PlaywrightTimeoutError:
             # 경기 없음 or 무한 로딩 -> 건너뜀
             return []
@@ -296,7 +286,8 @@ class Scrapper:
             match = matches.nth(i)
             match_status = self.find_element_css(match, "em[class^=MatchBox_status]")
             if match_status.inner_text().strip() == "종료":
-                match_urls.append(self.find_element_css(match, 'a[class^="MatchBox_link"]').get_attribute("href"))
+                href = self.find_element_css(match, 'a[class^="MatchBox_link"]').get_attribute("href")
+                match_urls.append(self.normalize_game_url(href))
 
         return match_urls
     
