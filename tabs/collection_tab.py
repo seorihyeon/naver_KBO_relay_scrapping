@@ -35,6 +35,14 @@ class CollectionTab:
     def log(self, msg):
         self.msg_q.put(msg)
 
+    def _channel_from_message(self, message: str) -> str:
+        txt = str(message)
+        if "[오류]" in txt or "실패" in txt or "예외" in txt:
+            return "error"
+        if "[중지]" in txt or "없습니다" in txt or "유효하지" in txt:
+            return "warn"
+        return "info"
+
     def debug_log(self, debug_log_path, msg):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         with open(debug_log_path, "a", encoding="utf-8") as f:
@@ -48,6 +56,7 @@ class CollectionTab:
                     tag, val = m
                     if tag == "progress":
                         dpg.configure_item(self._t("progress_bar"), default_value=float(val))
+                        self.state.set_status("info", "데이터 수집 진행", f"진행률: {int(float(val) * 100)}%", source="데이터 수집")
                     elif tag == "done":
                         for item in self.disable_items:
                             dpg.configure_item(item, enabled=True)
@@ -58,6 +67,8 @@ class CollectionTab:
                     prev = (prev + "\n" if prev else "") + str(m)
                     dpg.set_value(self._t("log"), prev)
                     dpg.set_y_scroll(self._t("log_window"), 1.0)
+                    channel = self._channel_from_message(str(m))
+                    self.state.set_status(channel, "데이터 수집 이벤트", str(m), source="데이터 수집")
         except queue.Empty:
             pass
 
@@ -249,6 +260,7 @@ class CollectionTab:
                 self.msg_q.put(("progress", 1.0))
         except Exception as e:
             self.log("[오류]\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
+            self.state.set_status("error", "데이터 수집 실패", "수집 중 예외가 발생했습니다.", debug_detail=traceback.format_exc(), source="데이터 수집")
         finally:
             if scr and getattr(scr, "driver", None):
                 try:
@@ -274,6 +286,7 @@ class CollectionTab:
                 ed = datetime.datetime.strptime(dpg.get_value(self._t("end_date")), "%Y-%m-%d").date()
                 if ed < sd:
                     self.log("종료일은 시작일보다 이전일 수 없습니다.")
+                    self.state.set_status("warn", "입력값 확인", "종료일은 시작일보다 이전일 수 없습니다.", source="데이터 수집")
                     return
             elif mode == "single":
                 sd = ed = datetime.datetime.strptime(dpg.get_value(self._t("single_date")), "%Y-%m-%d").date()
@@ -281,12 +294,14 @@ class CollectionTab:
                 year = int(dpg.get_value(self._t("season_year")))
                 if year < 2020:
                     self.log("시즌은 2020년부터 선택 가능합니다.")
+                    self.state.set_status("warn", "입력값 확인", "시즌은 2020년부터 선택 가능합니다.", source="데이터 수집")
                     return
                 sd = datetime.date(year, 1, 1)
                 ed = datetime.date(year, 12, 31)
                 season_year = year
         except ValueError:
             self.log("날짜 형식이 올바르지 않습니다.")
+            self.state.set_status("warn", "입력값 확인", "날짜 형식이 올바르지 않습니다.", source="데이터 수집")
             return
 
         os.makedirs(save_dir, exist_ok=True)
@@ -298,10 +313,12 @@ class CollectionTab:
         self.stop_flag.clear()
         self.worker = threading.Thread(target=self.run_scraper, args=(mode, sd, ed, save_dir, timeout, retry, season_year), daemon=True)
         self.worker.start()
+        self.state.set_status("info", "데이터 수집 시작", f"모드={mode}, 저장 경로={save_dir}", source="데이터 수집")
 
     def stop_scrape(self):
         self.stop_flag.set()
         self.log("중지 요청됨. 현재 작업이 완료될 때까지 기다려주세요.")
+        self.state.set_status("warn", "데이터 수집 중지 요청", "현재 작업이 완료된 뒤 중지됩니다.", source="데이터 수집")
 
     def open_save_dir_dialog(self):
         dpg.configure_item(self._t("save_dir_dialog"), show=True)

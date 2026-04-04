@@ -82,19 +82,21 @@ class ReplayTab:
 
     def load_selected_game(self):
         if not self.state.conn:
-            self.state.set_status("게임 로드 실패", "사용자 메시지: 먼저 DB 연결을 진행하세요.")
+            self.state.set_status("warn", "게임 로드 실패", "먼저 DB 연결을 진행하세요.", source="Replay")
             return
 
         sel = dpg.get_value("game_combo")
         hit = [g for g in self.state.games if g[1] == sel]
         if not hit:
-            self.state.set_status("게임 로드 실패", "사용자 메시지: 게임 선택 값이 유효하지 않습니다.")
+            self.state.set_status("warn", "게임 로드 실패", "게임 선택 값이 유효하지 않습니다.", source="Replay")
             return
 
         self.state.game_id = hit[0][0]
         self.state.set_status(
+            "info",
             f"게임 로드 중... (game_id={self.state.game_id})",
             f"선택 게임 로드 시작: game_id={self.state.game_id}",
+            source="Replay",
             append=False,
         )
         try:
@@ -103,7 +105,7 @@ class ReplayTab:
                 self.player_name_by_id = {row[0]: row[1] for row in cur.fetchall() if row[0]}
 
             self.events = self.fetch_events(self.state.game_id)
-            self.state.set_status("게임 로드 중...", f"이벤트 로드 완료: {len(self.events)}건", append=True)
+            self.state.set_status("info", "게임 로드 중...", f"이벤트 로드 완료: {len(self.events)}건", source="Replay", append=True)
 
             self.pitches = self.fetch_pitches(self.state.game_id)
             self.pitch_state_by_event = {}
@@ -115,7 +117,7 @@ class ReplayTab:
                     "balls": self.safe_int(p[10]),
                     "strikes": self.safe_int(p[11]),
                 }
-            self.state.set_status("게임 로드 중...", f"투구 로드 완료: {len(self.pitches)}건", append=True)
+            self.state.set_status("info", "게임 로드 중...", f"투구 로드 완료: {len(self.pitches)}건", source="Replay", append=True)
 
             self.pas = self.fetch_pas(self.state.game_id)
             self.pa_state_by_id = {}
@@ -127,10 +129,10 @@ class ReplayTab:
                     "start_seqno": self.safe_int(pa[12]),
                     "end_seqno": self.safe_int(pa[13]),
                 }
-            self.state.set_status("게임 로드 중...", f"타석 로드 완료: {len(self.pas)}건", append=True)
+            self.state.set_status("info", "게임 로드 중...", f"타석 로드 완료: {len(self.pas)}건", source="Replay", append=True)
 
             self.innings = self.fetch_innings(self.state.game_id)
-            self.state.set_status("게임 로드 중...", f"이닝 로드 완료: {len(self.innings)}건", append=True)
+            self.state.set_status("info", "게임 로드 중...", f"이닝 로드 완료: {len(self.innings)}건", source="Replay", append=True)
             self.derived_state_by_event = self.build_derived_state_map()
 
             self.event_idx = self.pitch_idx = self.pa_idx = self.inning_idx = 0
@@ -146,13 +148,14 @@ class ReplayTab:
             self.refresh_pitch_table(highlight_event_id=self.current_event_id())
             self.refresh_warning_panel()
             self.state.set_status(
+                "info",
                 f"게임 로드 완료 (game_id={self.state.game_id})",
                 "이벤트/투구/타석/이닝 데이터 로드 및 초기 렌더링이 완료되었습니다.",
+                source="Replay",
                 append=True,
             )
         except Exception as e:
-            self.state.set_status("게임 로드 실패", "사용자 메시지: 데이터를 불러오는 중 오류가 발생했습니다.", append=False)
-            self.state.set_status("게임 로드 실패", f"디버그 예외: {e}", append=True)
+            self.state.set_status("error", "게임 로드 실패", "데이터를 불러오는 중 오류가 발생했습니다.", debug_detail=str(e), source="Replay", append=False)
 
     def get_pa_event_columns(self):
         if self.pa_event_columns is not None:
@@ -406,7 +409,7 @@ class ReplayTab:
             "relay_text",
             f"진행률 {self.event_idx + 1} / {len(self.events)}\n이닝: {e[2]}회{half_txt}\n중계: {e[7] or '(텍스트 없음)'}",
         )
-        self.state.set_status(f"이벤트 포커스 | game_id={self.state.game_id}")
+        self.state.set_status("info", f"이벤트 포커스 | game_id={self.state.game_id}", source="Replay")
         self.is_syncing_event_slider = True
         dpg.set_value("event_slider", self.event_idx)
         dpg.set_value("event_jump_input", self.event_idx)
@@ -469,9 +472,9 @@ class ReplayTab:
             if dpg.does_item_exist(self.overlay_drawlist_tag):
                 dpg.delete_item(self.overlay_drawlist_tag, children_only=True)
                 dpg.draw_image(self.tex_tag, pmin=(0, 0), pmax=(self.tex_w, self.tex_h), parent=self.overlay_drawlist_tag, tag=self.background_draw_tag)
-            self.state.set_status(f"배경 이미지 로드 성공: {p}")
+            self.state.set_status("info", "배경 이미지 로드 성공", f"이미지 경로: {p}", source="Replay")
         except Exception as e:
-            self.state.set_status(f"배경 이미지 로드 실패: {e}")
+            self.state.set_status("error", "배경 이미지 로드 실패", "이미지를 적용하지 못했습니다.", debug_detail=str(e), source="Replay")
 
     def apply_responsive_layout(self):
         if dpg.does_item_exist("event_slider"):
