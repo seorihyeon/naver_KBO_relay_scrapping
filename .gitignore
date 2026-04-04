@@ -1,3 +1,4 @@
 edgedriver_win64/
 games/
 fonts/
+*.py[cod]
