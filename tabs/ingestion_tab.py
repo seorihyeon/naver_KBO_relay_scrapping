@@ -101,17 +101,9 @@ class IngestionTab:
     def build(self, parent):
         with dpg.tab(label="데이터 적재", parent=parent):
             with dpg.group(horizontal=True):
-                dpg.add_text("DSN")
-                dpg.add_input_text(tag="dsn_input", width=900, default_value=self.state.default_dsn)
-                dpg.add_button(label="DB 연결", callback=lambda: self.connect_db())
-
-            with dpg.group(horizontal=True):
                 dpg.add_text("JSON 경로")
                 dpg.add_input_text(tag="json_data_dir_input", width=520, default_value=self.state.default_data_dir)
                 dpg.add_text("스키마")
                 dpg.add_input_text(tag="schema_path_input", width=260, default_value=self.state.default_schema_path)
                 dpg.add_button(label="스키마 생성", callback=lambda: self.create_schema())
                 dpg.add_button(label="JSON 적재", callback=lambda: self.ingest_json_to_db())
-
-            dpg.add_text("상태", tag="status_text")
-            dpg.add_input_text(tag="status_detail_text", multiline=True, readonly=True, width=-1, height=180)
