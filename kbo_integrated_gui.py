@@ -31,10 +31,17 @@ class KBOIntegratedDPGApp:
         margin = 10
         gap = 10
 
-        db_cfg = dpg.get_item_configuration("global_db_window") if dpg.does_item_exist("global_db_window") else {}
-        alert_cfg = dpg.get_item_configuration("global_alert_window") if dpg.does_item_exist("global_alert_window") else {}
-        db_h = self.collapsed_h if db_cfg.get("collapsed") else self.db_window_expanded_h
-        alert_h = self.collapsed_h if alert_cfg.get("collapsed") else self.alert_window_expanded_h
+        def _window_height(tag: str, expanded_h: int) -> int:
+            if not dpg.does_item_exist(tag):
+                return expanded_h
+            cfg = dpg.get_item_configuration(tag)
+            state = dpg.get_item_state(tag)
+            rect_h = (state.get("rect_size") or (0, expanded_h))[1]
+            collapsed = bool(cfg.get("collapsed")) or rect_h <= (self.collapsed_h + 6)
+            return self.collapsed_h if collapsed else expanded_h
+
+        db_h = _window_height("global_db_window", self.db_window_expanded_h)
+        alert_h = _window_height("global_alert_window", self.alert_window_expanded_h)
 
         top_y = margin
         main_y = top_y + db_h + gap
