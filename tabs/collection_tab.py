@@ -141,12 +141,12 @@ class CollectionTab:
         for group in show_map.get(mode, []):
             dpg.configure_item(group, show=True)
 
-    def run_scraper(self, mode, start_date, end_date, save_dir, timeout, retry, season_year=None):
+    def run_scraper(self, mode, start_date, end_date, save_dir, timeout, retry, season_year=None, headless=True):
         self.stop_flag.clear()
         scr = None
         debug_log_path = os.path.join(save_dir, f"scrape_debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
         try:
-            scr = Scrapper(wait=timeout, path=save_dir)
+            scr = Scrapper(wait=timeout, path=save_dir, headless=headless)
             self.log(f"[디버그] 로그 파일: {debug_log_path}")
 
             def fetch_and_save(url, prefix="", game_date=None):
@@ -262,9 +262,12 @@ class CollectionTab:
             self.log("[오류]\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
             self.state.set_status("error", "데이터 수집 실패", "수집 중 예외가 발생했습니다.", debug_detail=traceback.format_exc(), source="데이터 수집")
         finally:
-            if scr and getattr(scr, "driver", None):
+            if scr:
                 try:
-                    scr.driver.quit()
+                    if hasattr(scr, "close"):
+                        scr.close()
+                    elif getattr(scr, "driver", None):
+                        scr.driver.quit()
                 except Exception:
                     pass
             self.msg_q.put(("done", None))
@@ -277,6 +280,7 @@ class CollectionTab:
         save_dir = dpg.get_value(self._t("save_dir"))
         timeout = dpg.get_value(self._t("timeout"))
         retry = dpg.get_value(self._t("retry"))
+        headless = dpg.get_value(self._t("headless"))
         mode = self.modes.get(dpg.get_value(self._t("mode")), "period")
         season_year = None
 
@@ -311,9 +315,14 @@ class CollectionTab:
         dpg.configure_item(self._t("progress_bar"), overlay="진행 중...")
 
         self.stop_flag.clear()
-        self.worker = threading.Thread(target=self.run_scraper, args=(mode, sd, ed, save_dir, timeout, retry, season_year), daemon=True)
+        self.worker = threading.Thread(
+            target=self.run_scraper,
+            args=(mode, sd, ed, save_dir, timeout, retry, season_year, headless),
+            daemon=True
+        )
         self.worker.start()
-        self.state.set_status("info", "데이터 수집 시작", f"모드={mode}, 저장 경로={save_dir}", source="데이터 수집")
+        browser_mode = "headless" if headless else "headed"
+        self.state.set_status("info", "데이터 수집 시작", f"모드={mode}, 브라우저={browser_mode}, 저장 경로={save_dir}", source="데이터 수집")
 
     def stop_scrape(self):
         self.stop_flag.set()
@@ -367,6 +376,7 @@ class CollectionTab:
                 dpg.add_input_int(tag=self._t("timeout"), width=80, default_value=8, min_value=2, max_value=60)
                 dpg.add_text("최대 실패 횟수")
                 dpg.add_input_int(tag=self._t("retry"), width=120, default_value=3, min_value=1, max_value=20)
+                dpg.add_checkbox(tag=self._t("headless"), label="Headless", default_value=True)
 
             with dpg.group(horizontal=True):
                 dpg.add_button(tag=self._t("btn_start"), label="시작", width=120, callback=lambda: self.start_scrape())
@@ -396,7 +406,7 @@ class CollectionTab:
             self._t("timeout"), self._t("retry"), self._t("btn_cal_start"), self._t("btn_cal_end"),
             self._t("btn_today_start"), self._t("btn_today_end"), self._t("single_date"),
             self._t("btn_cal_single"), self._t("btn_today_single"), self._t("season_year"), self._t("mode"),
-            self._t("btn_save_dir"),
+            self._t("btn_save_dir"), self._t("headless"),
         ]
         self.update_mode_fields()
         self.render_calendar()
