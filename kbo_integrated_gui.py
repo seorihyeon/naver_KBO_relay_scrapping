@@ -19,18 +19,36 @@ class KBOIntegratedDPGApp:
 
         self.default_viewport_w = 1440
         self.default_viewport_h = 940
+        self.db_window_expanded_h = 130
+        self.alert_window_expanded_h = 240
+        self.collapsed_h = 28
+
+    def layout_windows(self):
+        if not dpg.does_item_exist("main_window"):
+            return
+        vw = dpg.get_viewport_client_width()
+        vh = dpg.get_viewport_client_height()
+        margin = 10
+        gap = 10
+
+        db_cfg = dpg.get_item_configuration("global_db_window") if dpg.does_item_exist("global_db_window") else {}
+        alert_cfg = dpg.get_item_configuration("global_alert_window") if dpg.does_item_exist("global_alert_window") else {}
+        db_h = self.collapsed_h if db_cfg.get("collapsed") else self.db_window_expanded_h
+        alert_h = self.collapsed_h if alert_cfg.get("collapsed") else self.alert_window_expanded_h
+
+        top_y = margin
+        main_y = top_y + db_h + gap
+        alert_y = vh - margin - alert_h
+        main_h = max(220, alert_y - gap - main_y)
+        panel_w = max(700, vw - margin * 2)
+
+        dpg.configure_item("global_db_window", width=panel_w, height=db_h, pos=(margin, top_y))
+        dpg.configure_item("main_window", width=panel_w, height=main_h, pos=(margin, main_y))
+        dpg.configure_item("global_alert_window", width=panel_w, height=alert_h, pos=(margin, alert_y))
+        self.replay_tab.apply_responsive_layout()
 
     def on_viewport_resize(self, sender=None, app_data=None):
-        if not app_data:
-            return
-        vw, vh = app_data
-        if dpg.does_item_exist("global_db_window"):
-            dpg.configure_item("global_db_window", width=vw - 20, pos=(10, 10))
-        if dpg.does_item_exist("global_alert_window"):
-            dpg.configure_item("global_alert_window", width=vw - 20, pos=(10, vh - 250))
-        if dpg.does_item_exist("main_window"):
-            dpg.configure_item("main_window", width=vw - 20, height=vh - 420, pos=(10, 150))
-            self.replay_tab.apply_responsive_layout()
+        self.layout_windows()
 
     def on_tab_change(self, sender, app_data):
         if dpg.get_item_label(app_data):
@@ -41,17 +59,13 @@ class KBOIntegratedDPGApp:
 
         with dpg.window(
             tag="global_db_window",
-            label="global_db_window",
+            label="공통 DB 연결",
             width=self.default_viewport_w - 20,
             height=130,
             pos=(10, 10),
             no_resize=True,
             no_move=True,
-            no_title_bar=True,
-            no_collapse=True,
         ):
-            dpg.add_text("🧩 공통 DB 연결 패널", color=(120, 180, 255))
-            dpg.add_separator()
             with dpg.group(horizontal=True):
                 dpg.add_text("DSN")
                 dpg.add_input_text(tag="dsn_input", width=900, default_value=self.state.default_dsn)
@@ -75,17 +89,13 @@ class KBOIntegratedDPGApp:
 
         with dpg.window(
             tag="global_alert_window",
-            label="global_alert_window",
+            label="전역 알림",
             width=self.default_viewport_w - 20,
             height=240,
             pos=(10, self.default_viewport_h - 250),
             no_resize=True,
             no_move=True,
-            no_title_bar=True,
-            no_collapse=True,
         ):
-            dpg.add_text("🔔 전역 알림 패널", color=(120, 255, 160))
-            dpg.add_separator()
             dpg.add_input_text(tag="global_notification_text", multiline=True, readonly=True, width=-1, height=120)
             with dpg.group(horizontal=True):
                 dpg.add_button(label="최근 오류 다시 보기 (F8)", callback=lambda: self.state.show_recent_error())
@@ -108,8 +118,9 @@ class KBOIntegratedDPGApp:
         bind_korean_font(size=16)
         dpg.set_viewport_resize_callback(self.on_viewport_resize)
         dpg.show_viewport()
-        self.replay_tab.apply_responsive_layout()
+        self.layout_windows()
         while dpg.is_dearpygui_running():
+            self.layout_windows()
             self.collection_tab.message_pump()
             dpg.render_dearpygui_frame()
 
