@@ -29,6 +29,24 @@ class CollectionTab:
 
         self.modes = {"기간": "period", "특정 날짜": "single", "시즌": "season"}
 
+    def apply_responsive_layout(self, content_w: int, content_h: int):
+        available_w = max(720, int(content_w) - 36)
+        log_reserved_h = 360
+        if dpg.does_item_exist(self._t("group_season")) and dpg.is_item_shown(self._t("group_season")):
+            log_reserved_h = 330
+        elif dpg.does_item_exist(self._t("group_single")) and dpg.is_item_shown(self._t("group_single")):
+            log_reserved_h = 338
+
+        save_dir_w = max(220, min(460, available_w - 220))
+        log_h = max(120, int(content_h) - log_reserved_h)
+
+        if dpg.does_item_exist(self._t("save_dir")):
+            dpg.configure_item(self._t("save_dir"), width=save_dir_w)
+        if dpg.does_item_exist(self._t("progress_bar")):
+            dpg.configure_item(self._t("progress_bar"), width=max(240, available_w - 4))
+        if dpg.does_item_exist(self._t("log_window")):
+            dpg.configure_item(self._t("log_window"), height=log_h)
+
     def _t(self, name: str) -> str:
         return f"col_{name}"
 

@@ -28,6 +28,7 @@ class AppState:
     default_image_path: str = "assets/stadium.png"
     default_data_dir: str = "example"
     default_schema_path: str = "sql/schema.sql"
+    strike_zone_rules: dict[int, dict[str, float]] = field(default_factory=dict)
 
     @classmethod
     def from_environment(cls, root_dir: Path) -> "AppState":
@@ -52,7 +53,42 @@ class AppState:
         state.default_image_path = config.get("paths", {}).get("image_path", "assets/stadium.png")
         state.default_data_dir = config.get("paths", {}).get("json_data_dir", "example")
         state.default_schema_path = config.get("paths", {}).get("schema_path", "sql/schema.sql")
+        raw_rules = config.get("strike_zone_rules", {})
+        normalized_rules: dict[int, dict[str, float]] = {}
+        for year, rule in raw_rules.items():
+            try:
+                normalized_rules[int(year)] = {
+                    "top_pct": float(rule["top_pct"]),
+                    "bottom_pct": float(rule["bottom_pct"]),
+                    "width_cm": float(rule["width_cm"]),
+                }
+            except Exception:
+                continue
+        if not normalized_rules:
+            normalized_rules = {
+                2024: {"top_pct": 0.5635, "bottom_pct": 0.2764, "width_cm": 47.18},
+                2025: {"top_pct": 0.5575, "bottom_pct": 0.2704, "width_cm": 47.18},
+            }
+        state.strike_zone_rules = normalized_rules
         return state
+
+    def get_strike_zone_rule(self, target_year: int | None) -> dict[str, float]:
+        if not self.strike_zone_rules:
+            self.strike_zone_rules = {
+                2024: {"top_pct": 0.5635, "bottom_pct": 0.2764, "width_cm": 47.18},
+                2025: {"top_pct": 0.5575, "bottom_pct": 0.2704, "width_cm": 47.18},
+            }
+
+        rule_years = sorted(self.strike_zone_rules)
+        if target_year is None:
+            effective_year = rule_years[-1]
+        else:
+            past_years = [year for year in rule_years if year <= target_year]
+            effective_year = past_years[-1] if past_years else rule_years[0]
+
+        rule = dict(self.strike_zone_rules[effective_year])
+        rule["effective_year"] = effective_year
+        return rule
 
     def set_active_tab(self, tab_name: str) -> None:
         self.active_tab = tab_name
@@ -81,10 +117,19 @@ class AppState:
     def _refresh_error_panel(self) -> None:
         if dpg.does_item_exist("recent_error_summary"):
             dpg.set_value("recent_error_summary", self.last_error_summary or "최근 오류 없음")
+        if dpg.does_item_exist("recent_error_detail_summary"):
+            dpg.set_value("recent_error_detail_summary", self.last_error_summary or "최근 오류 없음")
         if dpg.does_item_exist("global_error_debug_text"):
             dpg.set_value("global_error_debug_text", self.last_error_debug or "디버그 상세 없음")
 
+    def set_db_connection_indicator(self, text: str, channel: str = "warn") -> None:
+        if dpg.does_item_exist("db_connection_summary_text"):
+            dpg.set_value("db_connection_summary_text", text)
+            dpg.configure_item("db_connection_summary_text", color=self._status_color(channel))
+
     def toggle_error_detail(self) -> None:
+        if dpg.does_item_exist("alert_detail_window"):
+            dpg.configure_item("alert_detail_window", show=True)
         if not dpg.does_item_exist("error_detail_group"):
             return
         visible = dpg.is_item_shown("error_detail_group")
@@ -92,6 +137,8 @@ class AppState:
 
     def show_recent_error(self) -> None:
         self._refresh_error_panel()
+        if dpg.does_item_exist("alert_detail_window"):
+            dpg.configure_item("alert_detail_window", show=True)
         if dpg.does_item_exist("error_detail_group"):
             dpg.configure_item("error_detail_group", show=True)
 
@@ -112,6 +159,7 @@ class AppState:
 
         if dpg.does_item_exist("status_text"):
             dpg.set_value("status_text", summary)
+            dpg.configure_item("status_text", color=self._status_color(channel))
 
         if merged_detail is not None and dpg.does_item_exist("status_detail_text"):
             if append:

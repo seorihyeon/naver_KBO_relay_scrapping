@@ -22,6 +22,15 @@ BAT_RESULT_KEYWORDS = ("안타", "홈런", "삼진", "뜬공", "땅볼", "볼넷
 PA_END_KEYWORDS = BAT_RESULT_KEYWORDS + ("아웃", "볼넷", "삼진", "사구")
 
 
+def _extract_event_subject_name(text: str) -> str | None:
+    if not text:
+        return None
+    match = re.search(r"(?:[123]\ub8e8\uc8fc\uc790\s*)?([^ :]+)\s*:", text)
+    if match:
+        return match.group(1).strip()
+    return None
+
+
 def _extract_runner_name(text: str, base_no: int) -> str | None:
     if not text:
         return None
@@ -92,6 +101,29 @@ def _infer_outs_recorded(text: str) -> int:
     if "아웃" in txt:
         return 1
     return 0
+
+
+def _is_batter_intro_text(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    return bool(re.match(r"^\d+\ubc88\ud0c0\uc790\s+\S+", stripped) or re.match(r"^\ub300\ud0c0\s+\S+", stripped))
+
+
+def _is_neutral_baserunning_text(text: str) -> bool:
+    if not text:
+        return False
+    return "\uacac\uc81c \uc2dc\ub3c4" in text and not any(
+        keyword in text
+        for keyword in (
+            "\uc544\uc6c3",
+            "\uc138\uc774\ud504",
+            "\uc9c4\ub8e8",
+            "\ud648\uc778",
+            "\ub3c4\ub8e8",
+            "\uc2e4\ucc45",
+        )
+    )
 
 
 @dataclass
@@ -232,6 +264,56 @@ def _is_pa_end(event: EventRec) -> bool:
     return event.category == "bat_result" or any(k in txt for k in PA_END_KEYWORDS)
 
 
+def _event_has_pa_action(event: EventRec) -> bool:
+    if event.category in {"pitch", "bat_result"}:
+        return True
+    if event.category == "baserunning":
+        return not _is_neutral_baserunning_text(event.text or "")
+    if event.category in {"header", "review", "substitution"}:
+        return False
+
+    txt = event.text or ""
+    if _is_batter_intro_text(txt):
+        return False
+    if event.pitch_num is not None or event.pitch_result or event.pts_pitch_id:
+        return True
+    return bool(
+        re.search(r"\d+\uad6c", txt)
+        or "\ud53c\uce58\ud074\ub77d" in txt
+        or "\ubab8\uc5d0 \ub9de\ub294 \ubcfc" in txt
+        or "\ubcf4\ub110" in txt
+    )
+
+
+def _event_starts_new_pa(event: EventRec) -> bool:
+    if not event.batter_id:
+        return False
+    if event.category == "substitution":
+        return True
+    return _event_has_pa_action(event) or _is_batter_intro_text(event.text or "")
+
+
+def _resolve_baserunning_subject(
+    event: EventRec,
+    player_name_by_id: dict[str, str],
+    name_to_player_id: dict[str, str],
+) -> tuple[str | None, str | None]:
+    runner_name = _extract_event_subject_name(event.text or "")
+    if runner_name:
+        runner_id = name_to_player_id.get(runner_name)
+        if runner_id:
+            return runner_id, runner_name
+        batter_name = player_name_by_id.get(event.batter_id or "")
+        if batter_name and batter_name == runner_name:
+            return event.batter_id, runner_name
+        return None, runner_name
+
+    batter_name = player_name_by_id.get(event.batter_id or "")
+    if batter_name:
+        return event.batter_id, batter_name
+    return event.batter_id, None
+
+
 def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
     with conn.cursor() as cur:
         cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_id TEXT")
@@ -271,6 +353,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_id: int | None = None
         current_pa_key: tuple[int, str, str | None] | None = None
         current_pa_event_no = 0
+        current_pa_has_action = False
         event_id_by_pitch_id: dict[str, int] = {}
         last_event_by_pa: dict[int, int] = {}
         runner_name_by_base = {1: None, 2: None, 3: None}
@@ -298,8 +381,33 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
             inning_id = inning_map[in_key]
 
             pa_key = (inning_no, half, ev.batter_id)
-            start_new_pa = current_pa_id is None or current_pa_key != pa_key
-            if start_new_pa:
+            event_starts_new_pa = _event_starts_new_pa(ev)
+            event_pa_id: int | None = None
+            if current_pa_id is not None and current_pa_key == pa_key:
+                current_pa_event_no += 1
+                event_pa_id = current_pa_id
+            elif (
+                current_pa_id is not None
+                and not current_pa_has_action
+                and current_pa_key is not None
+                and current_pa_key[:2] == in_key
+                and event_starts_new_pa
+                and ev.batter_id
+                and current_pa_key[2] != ev.batter_id
+            ):
+                cur.execute(
+                    """
+                    UPDATE plate_appearances
+                    SET batter_id = %s,
+                        pitcher_id = %s
+                    WHERE pa_id = %s
+                    """,
+                    (ev.batter_id, ev.pitcher_id, current_pa_id),
+                )
+                current_pa_key = pa_key
+                current_pa_event_no += 1
+                event_pa_id = current_pa_id
+            elif event_starts_new_pa:
                 pa_counter += 1
                 pa_in_half_counter[in_key] += 1
                 cur.execute(
@@ -329,9 +437,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 )
                 current_pa_id = cur.fetchone()[0]
                 current_pa_key = pa_key
-                current_pa_event_no = 0
+                current_pa_event_no = 1
+                current_pa_has_action = False
+                event_pa_id = current_pa_id
 
-            current_pa_event_no += 1
             _apply_baserunner_transition(ev.text, runner_name_by_base, runner_id_by_base, name_to_player_id)
             has_runner_transition = bool(re.search(r"[123]루주자\s*[^ :]+\s*:.*(까지 진루|홈인|아웃)", ev.text or ""))
             if not ev.base1:
@@ -373,9 +482,9 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 (
                     game_id,
                     inning_id,
-                    current_pa_id,
+                    event_pa_id,
                     event_seq_game,
-                    current_pa_event_no,
+                    current_pa_event_no if event_pa_id is not None else None,
                     ev.type_code,
                     ev.category,
                     ev.text,
@@ -401,9 +510,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
             )
             pa_event_id = cur.fetchone()[0]
 
-            prev_pa_event_id = last_event_by_pa.get(current_pa_id)
+            prev_pa_event_id = last_event_by_pa.get(event_pa_id) if event_pa_id is not None else None
             if (
-                ev.category == "baserunning"
+                event_pa_id is not None
+                and ev.category == "baserunning"
                 and prev_pa_event_id
                 and prev_pa_event_id != pa_event_id
                 and any(k in (ev.text or "") for k in ("진루", "홈인", "아웃"))
@@ -454,7 +564,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     ),
                 )
 
-            last_event_by_pa[current_pa_id] = pa_event_id
+            if event_pa_id is not None:
+                last_event_by_pa[event_pa_id] = pa_event_id
 
             if ev.pts_pitch_id:
                 event_id_by_pitch_id[ev.pts_pitch_id] = pa_event_id
@@ -487,7 +598,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         ev.pts_pitch_id,
                         game_id,
                         inning_id,
-                        current_pa_id,
+                        event_pa_id,
                         pa_event_id,
                         ev.pitch_num,
                         ev.pitch_result,
@@ -504,6 +615,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
 
             if ev.category == "baserunning":
                 outs_recorded = _infer_outs_recorded(ev.text)
+                runner_player_id, runner_name_raw = _resolve_baserunning_subject(ev, player_name_by_id, name_to_player_id)
                 cur.execute(
                     """
                     INSERT INTO baserunning_events (
@@ -515,10 +627,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     (
                         game_id,
                         inning_id,
-                        current_pa_id,
+                        event_pa_id,
                         pa_event_id,
-                        ev.batter_id,
-                        None,
+                        runner_player_id,
+                        runner_name_raw,
                         "steal" if "도루" in ev.text else "advance",
                         bool(outs_recorded),
                         outs_recorded,
@@ -535,7 +647,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         subject_type, final_call, review_target_text, description
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (pa_event_id, game_id, inning_id, current_pa_id, "play", None, ev.text, ev.text),
+                    (pa_event_id, game_id, inning_id, event_pa_id, "play", None, ev.text, ev.text),
                 )
 
             if ev.category == "substitution":
@@ -547,10 +659,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         in_player_name, out_player_name, description
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (pa_event_id, game_id, inning_id, current_pa_id, None, "other", None, None, None, None, ev.text),
+                    (pa_event_id, game_id, inning_id, event_pa_id, None, "other", None, None, None, None, ev.text),
                 )
 
-            if ev.category == "bat_result":
+            if ev.category == "bat_result" and event_pa_id is not None:
                 cur.execute(
                     """
                     INSERT INTO batted_ball_results (
@@ -559,7 +671,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        current_pa_id,
+                        event_pa_id,
                         pa_event_id,
                         ev.pts_pitch_id,
                         ev.pitch_result,
@@ -571,32 +683,36 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     ),
                 )
 
-            cur.execute(
-                """
-                UPDATE plate_appearances
-                SET end_seqno = %s,
-                    end_pitch_num = COALESCE(%s, end_pitch_num),
-                    balls_final = %s,
-                    strikes_final = %s,
-                    outs_after = %s,
-                    bases_after = %s,
-                    result_text = CASE WHEN %s THEN %s ELSE result_text END,
-                    is_terminal = COALESCE(is_terminal, %s)
-                WHERE pa_id = %s
-                """,
-                (
-                    ev.seqno,
-                    ev.pitch_num,
-                    ev.balls,
-                    ev.strikes,
-                    ev.outs,
-                    f"{int(ev.base1)}{int(ev.base2)}{int(ev.base3)}",
-                    _is_pa_end(ev),
-                    ev.text,
-                    _is_pa_end(ev),
-                    current_pa_id,
-                ),
-            )
+            if event_pa_id is not None:
+                cur.execute(
+                    """
+                    UPDATE plate_appearances
+                    SET end_seqno = %s,
+                        end_pitch_num = COALESCE(%s, end_pitch_num),
+                        balls_final = %s,
+                        strikes_final = %s,
+                        outs_after = %s,
+                        bases_after = %s,
+                        result_text = CASE WHEN %s THEN %s ELSE result_text END,
+                        is_terminal = COALESCE(is_terminal, %s)
+                    WHERE pa_id = %s
+                    """,
+                    (
+                        ev.seqno,
+                        ev.pitch_num,
+                        ev.balls,
+                        ev.strikes,
+                        ev.outs,
+                        f"{int(ev.base1)}{int(ev.base2)}{int(ev.base3)}",
+                        _is_pa_end(ev),
+                        ev.text,
+                        _is_pa_end(ev),
+                        event_pa_id,
+                    ),
+                )
+
+            if event_pa_id == current_pa_id and _event_has_pa_action(ev):
+                current_pa_has_action = True
 
             cur.execute(
                 """
@@ -606,11 +722,6 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 """,
                 (ev.seqno, ev.seqno, inning_id),
             )
-
-            if _is_pa_end(ev):
-                current_pa_id = None
-                current_pa_key = None
-                current_pa_event_no = 0
 
         cur.execute(
             """

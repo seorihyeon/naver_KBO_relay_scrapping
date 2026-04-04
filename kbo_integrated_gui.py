@@ -19,9 +19,13 @@ class KBOIntegratedDPGApp:
 
         self.default_viewport_w = 1440
         self.default_viewport_h = 940
-        self.db_window_expanded_h = 130
-        self.alert_window_expanded_h = 240
-        self.collapsed_h = 28
+        self.bottom_panel_h = 96
+        self.bottom_db_ratio = 0.36
+        self.db_detail_window_w = 980
+        self.db_detail_window_h = 228
+        self.alert_detail_window_w = 1040
+        self.alert_detail_window_h = 336
+        self.alert_error_detail_h = 104
 
     def layout_windows(self):
         if not dpg.does_item_exist("main_window"):
@@ -31,27 +35,39 @@ class KBOIntegratedDPGApp:
         margin = 10
         gap = 10
 
-        def _window_height(tag: str, expanded_h: int) -> int:
-            if not dpg.does_item_exist(tag):
-                return expanded_h
-            cfg = dpg.get_item_configuration(tag)
-            state = dpg.get_item_state(tag)
-            rect_h = (state.get("rect_size") or (0, expanded_h))[1]
-            collapsed = bool(cfg.get("collapsed")) or rect_h <= (self.collapsed_h + 6)
-            return self.collapsed_h if collapsed else expanded_h
+        panel_w = max(900, vw - margin * 2)
+        db_w = max(360, min(int(panel_w * self.bottom_db_ratio), panel_w - 520))
+        alert_w = max(420, panel_w - db_w - gap)
+        bottom_y = vh - margin - self.bottom_panel_h
+        main_h = max(220, bottom_y - gap - margin)
+        tab_content_w = max(700, panel_w - 28)
+        tab_content_h = max(260, main_h - 72)
 
-        db_h = _window_height("global_db_window", self.db_window_expanded_h)
-        alert_h = _window_height("global_alert_window", self.alert_window_expanded_h)
+        dpg.configure_item("main_window", width=panel_w, height=main_h, pos=(margin, margin))
+        dpg.configure_item("global_db_window", width=db_w, height=self.bottom_panel_h, pos=(margin, bottom_y))
+        dpg.configure_item("global_alert_window", width=alert_w, height=self.bottom_panel_h, pos=(margin + db_w + gap, bottom_y))
+        if dpg.does_item_exist("db_summary_info_panel"):
+            dpg.configure_item("db_summary_info_panel", width=max(180, db_w - 160), height=self.bottom_panel_h - 18)
+        if dpg.does_item_exist("status_text"):
+            dpg.configure_item("status_text", wrap=max(140, db_w - 220))
+        if dpg.does_item_exist("db_summary_hint_text"):
+            dpg.configure_item("db_summary_hint_text", wrap=max(140, db_w - 220))
 
-        top_y = margin
-        main_y = top_y + db_h + gap
-        alert_y = vh - margin - alert_h
-        main_h = max(220, alert_y - gap - main_y)
-        panel_w = max(700, vw - margin * 2)
+        if dpg.does_item_exist("db_detail_window"):
+            db_x = max(margin, int((vw - self.db_detail_window_w) / 2))
+            db_y = max(margin, int((vh - self.db_detail_window_h) / 2))
+            dpg.configure_item("db_detail_window", width=self.db_detail_window_w, height=self.db_detail_window_h, pos=(db_x, db_y))
 
-        dpg.configure_item("global_db_window", width=panel_w, height=db_h, pos=(margin, top_y))
-        dpg.configure_item("main_window", width=panel_w, height=main_h, pos=(margin, main_y))
-        dpg.configure_item("global_alert_window", width=panel_w, height=alert_h, pos=(margin, alert_y))
+        if dpg.does_item_exist("alert_detail_window"):
+            alert_detail_h = self.alert_detail_window_h
+            if dpg.does_item_exist("error_detail_group") and dpg.is_item_shown("error_detail_group"):
+                alert_detail_h += self.alert_error_detail_h
+            alert_x = max(margin, int((vw - self.alert_detail_window_w) / 2))
+            alert_y = max(margin, int((vh - alert_detail_h) / 2))
+            dpg.configure_item("alert_detail_window", width=self.alert_detail_window_w, height=alert_detail_h, pos=(alert_x, alert_y))
+
+        self.collection_tab.apply_responsive_layout(tab_content_w, tab_content_h)
+        self.ingestion_tab.apply_responsive_layout(tab_content_w, tab_content_h)
         self.replay_tab.apply_responsive_layout()
 
     def on_viewport_resize(self, sender=None, app_data=None):
@@ -60,6 +76,24 @@ class KBOIntegratedDPGApp:
     def on_tab_change(self, sender, app_data):
         if dpg.get_item_label(app_data):
             self.state.set_active_tab(dpg.get_item_label(app_data))
+
+    def show_db_detail(self):
+        if dpg.does_item_exist("db_detail_window"):
+            dpg.configure_item("db_detail_window", show=True)
+            self.layout_windows()
+
+    def show_alert_detail(self, *, show_error_debug: bool = False):
+        if dpg.does_item_exist("alert_detail_window"):
+            dpg.configure_item("alert_detail_window", show=True)
+        if show_error_debug and dpg.does_item_exist("error_detail_group"):
+            dpg.configure_item("error_detail_group", show=True)
+        self.layout_windows()
+
+    def hide_detail_window(self, tag: str):
+        if dpg.does_item_exist(tag):
+            dpg.configure_item(tag, show=False)
+        if tag == "alert_detail_window" and dpg.does_item_exist("error_detail_group"):
+            dpg.configure_item("error_detail_group", show=False)
 
     def build(self):
         dpg.create_context()
@@ -74,11 +108,17 @@ class KBOIntegratedDPGApp:
             no_move=True,
         ):
             with dpg.group(horizontal=True):
-                dpg.add_text("DSN")
-                dpg.add_input_text(tag="dsn_input", width=900, default_value=self.state.default_dsn)
-                dpg.add_button(label="DB 연결", callback=lambda: self.ingestion_tab.connect_db())
-            dpg.add_text("DB 상태", tag="status_text")
-            dpg.add_input_text(tag="status_detail_text", multiline=True, readonly=True, width=-1, height=40)
+                with dpg.child_window(tag="db_summary_info_panel", border=False, width=220, height=self.bottom_panel_h - 18, no_scrollbar=True):
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("DB 상태")
+                        dpg.add_text("미연결", tag="db_connection_summary_text", color=(255, 195, 90))
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("최근 상태")
+                        dpg.add_text("대기 중", tag="status_text", color=(180, 180, 180), wrap=180)
+                    dpg.add_text("DSN/상세 로그는 상세 창에서 확인", tag="db_summary_hint_text", color=(160, 160, 160), wrap=180)
+                with dpg.group():
+                    dpg.add_button(label="DB 연결", callback=lambda: self.ingestion_tab.connect_db(), width=120)
+                    dpg.add_button(label="상세 보기", callback=lambda: self.show_db_detail(), width=120)
 
         with dpg.window(
             tag="main_window",
@@ -103,19 +143,52 @@ class KBOIntegratedDPGApp:
             no_resize=True,
             no_move=True,
         ):
-            dpg.add_input_text(tag="global_notification_text", multiline=True, readonly=True, width=-1, height=120)
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="최근 오류 다시 보기 (F8)", callback=lambda: self.state.show_recent_error())
-                dpg.add_button(label="오류 디버그 펼치기/접기", callback=lambda: self.state.toggle_error_detail())
-            dpg.add_text("최근 오류 없음", tag="recent_error_summary", color=(255, 150, 150))
-            with dpg.group(tag="error_detail_group", show=False):
-                dpg.add_input_text(tag="global_error_debug_text", multiline=True, readonly=True, width=-1, height=90)
-            dpg.add_separator()
             with dpg.group(horizontal=True):
                 dpg.add_text("현재 탭: 데이터 수집", tag="global_status_current_tab")
                 dpg.add_text("최근 작업: 대기 중", tag="global_status_recent_task")
                 dpg.add_text("상태: 대기", tag="global_status_result", color=(180, 180, 180))
+                dpg.add_button(label="상세 보기", callback=lambda: self.show_alert_detail())
+            with dpg.group(horizontal=True):
                 dpg.add_text("마지막 업데이트: -", tag="global_status_updated_at")
+                dpg.add_spacer(width=16)
+                dpg.add_text("최근 오류 없음", tag="recent_error_summary", color=(255, 150, 150))
+                dpg.add_button(label="최근 오류 다시 보기 (F8)", callback=lambda: self.state.show_recent_error())
+
+        with dpg.window(
+            tag="db_detail_window",
+            label="DB 연결 상세",
+            show=False,
+            no_resize=True,
+            no_move=True,
+            no_collapse=True,
+        ):
+            with dpg.group(horizontal=True):
+                dpg.add_text("DSN")
+                dpg.add_input_text(tag="dsn_input", width=720, default_value=self.state.default_dsn)
+                dpg.add_button(label="DB 연결", callback=lambda: self.ingestion_tab.connect_db())
+                dpg.add_button(label="닫기", callback=lambda: self.hide_detail_window("db_detail_window"))
+            dpg.add_spacer(height=6)
+            dpg.add_text("상세 상태 로그")
+            dpg.add_input_text(tag="status_detail_text", multiline=True, readonly=True, width=-1, height=128)
+
+        with dpg.window(
+            tag="alert_detail_window",
+            label="전역 알림 상세",
+            show=False,
+            no_resize=True,
+            no_move=True,
+            no_collapse=True,
+        ):
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="최근 오류 다시 보기 (F8)", callback=lambda: self.state.show_recent_error())
+                dpg.add_button(label="오류 디버그 펼치기/접기", callback=lambda: self.state.toggle_error_detail())
+                dpg.add_button(label="닫기", callback=lambda: self.hide_detail_window("alert_detail_window"))
+            dpg.add_spacer(height=6)
+            dpg.add_text("최근 오류 없음", tag="recent_error_detail_summary", color=(255, 150, 150))
+            dpg.add_input_text(tag="global_notification_text", multiline=True, readonly=True, width=-1, height=180)
+            with dpg.group(tag="error_detail_group", show=False):
+                dpg.add_spacer(height=6)
+                dpg.add_input_text(tag="global_error_debug_text", multiline=True, readonly=True, width=-1, height=90)
 
         with dpg.handler_registry():
             dpg.add_key_press_handler(key=dpg.mvKey_F8, callback=lambda: self.state.show_recent_error())
@@ -123,6 +196,7 @@ class KBOIntegratedDPGApp:
         dpg.create_viewport(title="KBO Replay QA (Graphics + Alerts)", width=self.default_viewport_w, height=self.default_viewport_h)
         dpg.setup_dearpygui()
         bind_korean_font(size=16)
+        self.state.set_db_connection_indicator("미연결", "warn")
         dpg.set_viewport_resize_callback(self.on_viewport_resize)
         dpg.show_viewport()
         self.layout_windows()

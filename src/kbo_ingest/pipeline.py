@@ -40,10 +40,43 @@ def validate_game(conn: psycopg.Connection, game_id: int) -> dict[str, int]:
             (game_id,),
         )
         score_null_cnt = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM plate_appearances pa
+            WHERE pa.game_id = %s
+              AND COALESCE(pa.result_text, '') = ''
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM pitches p
+                  WHERE p.pa_id = pa.pa_id
+              )
+              AND EXISTS (
+                  SELECT 1
+                  FROM pa_events e
+                  WHERE e.pa_id = pa.pa_id
+                    AND e.event_category IN ('baserunning', 'header', 'review')
+              )
+            """,
+            (game_id,),
+        )
+        suspicious_empty_pa_cnt = cur.fetchone()[0]
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM baserunning_events
+            WHERE game_id = %s
+              AND runner_name_raw IS NULL
+            """,
+            (game_id,),
+        )
+        baserunning_runner_name_null_cnt = cur.fetchone()[0]
 
     return {
         "innings_count": innings_cnt,
         "plate_appearances_count": pa_cnt,
         "pitch_tracking_joined_count": joined_pitch_cnt,
         "score_null_event_count": score_null_cnt,
+        "suspicious_empty_pa_count": suspicious_empty_pa_cnt,
+        "baserunning_runner_name_null_count": baserunning_runner_name_null_cnt,
     }

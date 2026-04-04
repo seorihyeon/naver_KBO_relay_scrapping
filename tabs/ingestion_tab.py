@@ -14,16 +14,29 @@ class IngestionTab:
     def __init__(self, state: AppState):
         self.state = state
 
+    def apply_responsive_layout(self, content_w: int, content_h: int):
+        available_w = max(720, int(content_w) - 36)
+        schema_w = max(180, min(320, int(available_w * 0.24)))
+        json_w = max(260, available_w - schema_w - 290)
+
+        if dpg.does_item_exist("json_data_dir_input"):
+            dpg.configure_item("json_data_dir_input", width=json_w)
+        if dpg.does_item_exist("schema_path_input"):
+            dpg.configure_item("schema_path_input", width=schema_w)
+
     def connect_db(self):
         dsn = dpg.get_value("dsn_input").strip()
+        self.state.set_db_connection_indicator("연결 시도 중", "info")
         self.state.set_status("info", "DB 연결 중...", "DSN 확인 및 DB 연결을 시도합니다.", source="데이터 적재")
         try:
             self.state.conn = psycopg.connect(dsn)
             self.state.conn.autocommit = True
+            self.state.set_db_connection_indicator("연결됨", "info")
             self.state.set_status("info", "DB 연결 성공", "DB 연결 완료. 게임 목록을 불러옵니다.", source="데이터 적재", append=True)
             self.load_games()
             self.state.set_status("info", "DB 연결 및 게임 목록 로드 완료", "연결/초기 로딩 단계 완료.", source="데이터 적재", append=True)
         except Exception as e:
+            self.state.set_db_connection_indicator("연결 실패", "error")
             self.state.set_status("error", "DB 연결 실패", "DSN/네트워크/DB 상태를 확인하세요.", debug_detail=str(e), source="데이터 적재", append=False)
 
     def create_schema(self):
