@@ -17,15 +17,48 @@ except ModuleNotFoundError:  # pragma: no cover - test env fallback
 from common_utils import first_non_empty, to_int
 
 
-BASERUN_KEYWORDS = ("주자", "도루", "진루", "아웃", "홈인", "견제")
-BAT_RESULT_KEYWORDS = ("안타", "홈런", "삼진", "뜬공", "땅볼", "볼넷", "사구", "병살")
-PA_END_KEYWORDS = BAT_RESULT_KEYWORDS + ("아웃", "볼넷", "삼진", "사구")
+BASERUN_KEYWORDS = ("도루", "진루", "홈인", "견제", "태그아웃", "포스아웃", "주루사", "협살")
+BAT_RESULT_KEYWORDS = (
+    "1루타",
+    "2루타",
+    "3루타",
+    "내야안타",
+    "번트안타",
+    "안타",
+    "홈런",
+    "삼진",
+    "뜬공",
+    "플라이 아웃",
+    "파울플라이 아웃",
+    "땅볼",
+    "직선타",
+    "라인드라이브",
+    "볼넷",
+    "고의4구",
+    "자동 고의4구",
+    "사구",
+    "몸에 맞는 볼",
+    "병살",
+    "희생플라이",
+    "희생번트",
+    "낫아웃",
+    "낫 아웃",
+    "야수선택",
+    "타격방해",
+    "실책",
+    "출루",
+)
+PA_END_KEYWORDS = BAT_RESULT_KEYWORDS + ("아웃",)
+
+RUNNER_EVENT_PREFIX_RE = re.compile(r"^(?:[123]루주자|타자주자)\s+")
+PICKOFF_ATTEMPT_RE = re.compile(r"^[123]루\s+견제 시도")
+_PA_RUNNER_COLUMNS_READY_BY_CONN: set[int] = set()
 
 
 def _extract_event_subject_name(text: str) -> str | None:
     if not text:
         return None
-    match = re.search(r"(?:[123]\ub8e8\uc8fc\uc790\s*)?([^ :]+)\s*:", text)
+    match = re.search(r"(?:(?:[123]\ub8e8\uc8fc\uc790|타자주자)\s*)?([^ :]+)\s*:", text)
     if match:
         return match.group(1).strip()
     return None
@@ -126,6 +159,49 @@ def _is_neutral_baserunning_text(text: str) -> bool:
     )
 
 
+def _event_description(text: str) -> str:
+    if ":" not in text:
+        return ""
+    return text.split(":", maxsplit=1)[1].strip()
+
+
+def _is_baserunning_text(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if RUNNER_EVENT_PREFIX_RE.match(stripped):
+        return True
+    if PICKOFF_ATTEMPT_RE.match(stripped):
+        return True
+    desc = _event_description(stripped)
+    return bool(desc) and any(keyword in desc for keyword in BASERUN_KEYWORDS)
+
+
+def _is_bat_result_text(text: str) -> bool:
+    if not text:
+        return False
+    stripped = text.strip()
+    if RUNNER_EVENT_PREFIX_RE.match(stripped) or PICKOFF_ATTEMPT_RE.match(stripped):
+        return False
+    desc = _event_description(stripped)
+    if not desc:
+        return False
+    return any(keyword in desc for keyword in BAT_RESULT_KEYWORDS)
+
+
+def _ensure_pa_event_runner_columns(conn: psycopg.Connection, cur: psycopg.Cursor) -> None:
+    conn_key = id(conn)
+    if conn_key in _PA_RUNNER_COLUMNS_READY_BY_CONN:
+        return
+    cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_id TEXT")
+    cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_id TEXT")
+    cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_id TEXT")
+    cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_name TEXT")
+    cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_name TEXT")
+    cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_name TEXT")
+    _PA_RUNNER_COLUMNS_READY_BY_CONN.add(conn_key)
+
+
 @dataclass
 class EventRec:
     raw_event_id: int
@@ -179,12 +255,12 @@ def classify_event(text: str, pitch_num: int | None, pitch_result: str | None, p
         return "substitution"
     if "비디오 판독" in txt:
         return "review"
-    if any(k in txt for k in BASERUN_KEYWORDS):
-        return "baserunning"
-    if any(k in txt for k in BAT_RESULT_KEYWORDS):
-        return "bat_result"
     if "회" in txt and ("초" in txt or "말" in txt):
         return "header"
+    if _is_baserunning_text(txt):
+        return "baserunning"
+    if _is_bat_result_text(txt):
+        return "bat_result"
     return "other"
 
 
@@ -261,7 +337,7 @@ def _fetch_events(cur: psycopg.Cursor, raw_game_id: int) -> list[EventRec]:
 
 def _is_pa_end(event: EventRec) -> bool:
     txt = event.text or ""
-    return event.category == "bat_result" or any(k in txt for k in PA_END_KEYWORDS)
+    return event.category == "bat_result" or _is_bat_result_text(txt) or any(k in txt for k in PA_END_KEYWORDS)
 
 
 def _event_has_pa_action(event: EventRec) -> bool:
@@ -316,12 +392,7 @@ def _resolve_baserunning_subject(
 
 def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
     with conn.cursor() as cur:
-        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_id TEXT")
-        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_id TEXT")
-        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_id TEXT")
-        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base1_runner_name TEXT")
-        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base2_runner_name TEXT")
-        cur.execute("ALTER TABLE pa_events ADD COLUMN IF NOT EXISTS base3_runner_name TEXT")
+        _ensure_pa_event_runner_columns(conn, cur)
 
         cur.execute("SELECT game_id, home_team_id, away_team_id FROM games WHERE raw_game_id = %s", (raw_game_id,))
         game_row = cur.fetchone()
@@ -340,7 +411,15 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         cur.execute("DELETE FROM innings WHERE game_id = %s", (game_id,))
 
         events = _fetch_events(cur, raw_game_id)
-        cur.execute("SELECT player_id, player_name FROM players")
+        cur.execute(
+            """
+            SELECT DISTINCT p.player_id, p.player_name
+            FROM players p
+            JOIN game_roster_entries gre ON gre.player_id = p.player_id
+            WHERE gre.game_id = %s
+            """,
+            (game_id,),
+        )
         player_name_by_id = {row[0]: row[1] for row in cur.fetchall() if row[0]}
         name_to_player_id = {}
         for player_id, player_name in player_name_by_id.items():
@@ -356,6 +435,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_has_action = False
         event_id_by_pitch_id: dict[str, int] = {}
         last_event_by_pa: dict[int, int] = {}
+        event_seq_in_pa_by_pa: dict[int, int] = {}
+        last_action_pa_id_by_half: dict[tuple[int, str], int] = {}
         runner_name_by_base = {1: None, 2: None, 3: None}
         runner_id_by_base = {1: None, 2: None, 3: None}
 
@@ -383,9 +464,25 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
             pa_key = (inning_no, half, ev.batter_id)
             event_starts_new_pa = _event_starts_new_pa(ev)
             event_pa_id: int | None = None
+            event_seq_in_pa: int | None = None
             if current_pa_id is not None and current_pa_key == pa_key:
                 current_pa_event_no += 1
                 event_pa_id = current_pa_id
+                event_seq_in_pa = current_pa_event_no
+            elif (
+                current_pa_id is not None
+                and not current_pa_has_action
+                and current_pa_key is not None
+                and current_pa_key[:2] == in_key
+                and ev.category in {"baserunning", "review"}
+                and ev.batter_id
+                and current_pa_key[2] != ev.batter_id
+            ):
+                prior_action_pa_id = last_action_pa_id_by_half.get(in_key)
+                if prior_action_pa_id is not None and prior_action_pa_id != current_pa_id:
+                    event_pa_id = prior_action_pa_id
+                    event_seq_in_pa_by_pa[event_pa_id] = event_seq_in_pa_by_pa.get(event_pa_id, 0) + 1
+                    event_seq_in_pa = event_seq_in_pa_by_pa[event_pa_id]
             elif (
                 current_pa_id is not None
                 and not current_pa_has_action
@@ -407,6 +504,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 current_pa_key = pa_key
                 current_pa_event_no += 1
                 event_pa_id = current_pa_id
+                event_seq_in_pa = current_pa_event_no
             elif event_starts_new_pa:
                 pa_counter += 1
                 pa_in_half_counter[in_key] += 1
@@ -440,6 +538,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 current_pa_event_no = 1
                 current_pa_has_action = False
                 event_pa_id = current_pa_id
+                event_seq_in_pa = current_pa_event_no
+                event_seq_in_pa_by_pa[current_pa_id] = current_pa_event_no
 
             _apply_baserunner_transition(ev.text, runner_name_by_base, runner_id_by_base, name_to_player_id)
             has_runner_transition = bool(re.search(r"[123]루주자\s*[^ :]+\s*:.*(까지 진루|홈인|아웃)", ev.text or ""))
@@ -484,7 +584,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     inning_id,
                     event_pa_id,
                     event_seq_game,
-                    current_pa_event_no if event_pa_id is not None else None,
+                    event_seq_in_pa,
                     ev.type_code,
                     ev.category,
                     ev.text,
@@ -566,6 +666,9 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
 
             if event_pa_id is not None:
                 last_event_by_pa[event_pa_id] = pa_event_id
+
+            if event_pa_id is not None and _event_has_pa_action(ev):
+                last_action_pa_id_by_half[in_key] = event_pa_id
 
             if ev.pts_pitch_id:
                 event_id_by_pitch_id[ev.pts_pitch_id] = pa_event_id

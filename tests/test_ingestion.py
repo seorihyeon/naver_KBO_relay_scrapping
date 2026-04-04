@@ -6,6 +6,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from src.kbo_ingest.normalize_game import (
     EventRec,
     _event_starts_new_pa,
+    _is_pa_end,
     _is_batter_intro_text,
     _resolve_baserunning_subject,
     classify_event,
@@ -57,6 +58,36 @@ def test_classify_substitution_event():
 
 def test_classify_baserunning_event():
     assert classify_event("1\ub8e8\uc8fc\uc790 \ub3c4\ub8e8 \uc131\uacf5", pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None) == "baserunning"
+
+
+def test_classify_batter_result_event_for_hit_text():
+    assert classify_event("\ucd5c\uc8fc\ud658 : \uc6b0\uc775\uc218 \ub4a4 3\ub8e8\ud0c0", pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None) == "bat_result"
+
+
+def test_classify_batter_result_event_for_out_text():
+    text = "\uae40\ud61c\uc131 : \uc720\uaca9\uc218 \ub545\ubcfc \uc544\uc6c3 (\uc720\uaca9\uc218->1\ub8e8\uc218 \uc1a1\uad6c\uc544\uc6c3)"
+    assert classify_event(text, pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None) == "bat_result"
+
+
+def test_classify_pickoff_attempt_as_baserunning():
+    assert classify_event("1\ub8e8 \uacac\uc81c \uc2dc\ub3c4", pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None) == "baserunning"
+
+
+def test_classify_automatic_intentional_walk_as_bat_result():
+    assert classify_event("\ub85c\ud558\uc2a4 : \uc790\ub3d9 \uace0\uc7584\uad6c", pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None) == "bat_result"
+
+
+def test_classify_spaced_not_out_as_bat_result():
+    text = "\uc774\uc8fc\ud615 : \ud3ec\uc218 \uc2a4\ud2b8\ub77c\uc774\ud06c \ub0ab \uc544\uc6c3 (\ud3ec\uc218->1\ub8e8\uc218 1\ub8e8 \ud130\uce58\uc544\uc6c3)"
+    assert classify_event(text, pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None) == "bat_result"
+
+
+def test_is_pa_end_for_real_batter_result_text():
+    event = make_event(
+        text="\uc548\uc0c1\ud604 : \uc6b0\uc775\uc218 \ub4a4 1\ub8e8\ud0c0",
+        category="bat_result",
+    )
+    assert _is_pa_end(event)
 
 
 def test_batter_intro_text_detection():

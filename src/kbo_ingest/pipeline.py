@@ -55,7 +55,7 @@ def validate_game(conn: psycopg.Connection, game_id: int) -> dict[str, int]:
                   SELECT 1
                   FROM pa_events e
                   WHERE e.pa_id = pa.pa_id
-                    AND e.event_category IN ('baserunning', 'header', 'review')
+                    AND e.event_category IN ('baserunning', 'review')
               )
             """,
             (game_id,),
