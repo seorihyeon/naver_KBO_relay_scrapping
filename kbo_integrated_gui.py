@@ -39,7 +39,10 @@ class KBOIntegratedDPGApp:
         dpg.set_viewport_resize_callback(self.on_viewport_resize)
         dpg.show_viewport()
         self.replay_tab.apply_responsive_layout()
-        dpg.start_dearpygui()
+        while dpg.is_dearpygui_running():
+            self.collection_tab.message_pump()
+            dpg.render_dearpygui_frame()
+
         dpg.destroy_context()
 
 
