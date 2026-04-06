@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 from pathlib import Path
@@ -18,6 +19,35 @@ def _to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _to_bool_flag(value: Any, *, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "t", "y", "yes"}:
+        return True
+    if normalized in {"0", "false", "f", "n", "no"}:
+        return False
+    return default
+
+
+def _parse_game_date(value: Any) -> datetime.date | None:
+    if value in (None, "", "-"):
+        return None
+
+    normalized = str(value).strip()
+    for fmt in ("%Y%m%d", "%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(normalized, fmt).date()
+        except ValueError:
+            continue
+    return None
 
 
 def _file_hash(path: Path) -> str:
@@ -80,11 +110,46 @@ def _upsert_player(cur: psycopg.Cursor, row: dict[str, Any]) -> None:
     )
 
 
+def _iter_record_player_rows(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    rows: list[tuple[str, dict[str, Any]]] = []
+    for side in ("home", "away"):
+        for row in (record.get("batter") or {}).get(side, []) or []:
+            if first_non_empty(row.get("playerCode"), row.get("pcode"), row.get("playerId")):
+                rows.append((side, row))
+        for row in (record.get("pitcher") or {}).get(side, []) or []:
+            if first_non_empty(row.get("playerCode"), row.get("pcode"), row.get("playerId")):
+                rows.append((side, row))
+    return rows
+
+
+def _delete_existing_normalized_rows(cur: psycopg.Cursor, game_id: int) -> None:
+    cur.execute("DELETE FROM substitution_events WHERE game_id = %s", (game_id,))
+    cur.execute("DELETE FROM review_events WHERE game_id = %s", (game_id,))
+    cur.execute("DELETE FROM baserunning_events WHERE game_id = %s", (game_id,))
+    cur.execute(
+        "DELETE FROM batted_ball_results WHERE pa_id IN (SELECT pa_id FROM plate_appearances WHERE game_id = %s)",
+        (game_id,),
+    )
+    cur.execute("DELETE FROM pitch_tracking WHERE pitch_id IN (SELECT pitch_id FROM pitches WHERE game_id = %s)", (game_id,))
+    cur.execute("DELETE FROM pitches WHERE game_id = %s", (game_id,))
+    cur.execute("DELETE FROM pa_events WHERE game_id = %s", (game_id,))
+    cur.execute("DELETE FROM plate_appearances WHERE game_id = %s", (game_id,))
+    cur.execute("DELETE FROM innings WHERE game_id = %s", (game_id,))
+
+
 def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int]:
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     file_hash = _file_hash(json_path)
     lineup = payload.get("lineup") or {}
+    record = payload.get("record") or {}
     game_info = lineup.get("game_info") or {}
+    raw_game_date = first_non_empty(game_info.get("gdate"), game_info.get("gameDate"), game_info.get("date"))
+    game_date = _parse_game_date(raw_game_date)
+    is_postseason = _to_bool_flag(
+        first_non_empty(game_info.get("isPostSeason"), game_info.get("postSeason"), game_info.get("postseason")),
+        default=False,
+    )
+    cancel_flag = _to_bool_flag(first_non_empty(game_info.get("cancelFlag"), game_info.get("cancel")), default=False)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -125,7 +190,7 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
 
         source_game_key = "_".join(
             [
-                str(first_non_empty(game_info.get("gdate"), "")),
+                str(raw_game_date or ""),
                 str(away_code or ""),
                 str(home_code or ""),
                 str(first_non_empty(game_info.get("gameFlag"), "")),
@@ -158,22 +223,24 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
             (
                 raw_game_id,
                 source_game_key,
-                str(first_non_empty(game_info.get("gdate"), ""))[:10] or None,
+                game_date,
                 first_non_empty(game_info.get("gameTime"), game_info.get("gtime")),
                 stadium_id,
                 home_team_id,
                 away_team_id,
                 str(first_non_empty(game_info.get("round"), "")) or None,
                 first_non_empty(game_info.get("gameFlag"), game_info.get("gubun")),
-                bool(first_non_empty(game_info.get("postSeason"), False)),
-                bool(first_non_empty(game_info.get("cancel"), False)),
+                is_postseason,
+                cancel_flag,
                 first_non_empty(game_info.get("statusCode"), game_info.get("state")),
                 str(json_path),
             ),
         )
         game_id = cur.fetchone()[0]
 
+        _delete_existing_normalized_rows(cur, game_id)
         cur.execute("DELETE FROM game_roster_entries WHERE game_id = %s", (game_id,))
+        roster_player_ids: set[str] = set()
 
         for side, team_id in (("home", home_team_id), ("away", away_team_id)):
             for group in ("starter", "bullpen", "candidate"):
@@ -181,6 +248,8 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
                 for row in rows:
                     _upsert_player(cur, row)
                     pid = str(first_non_empty(row.get("playerCode"), row.get("pcode"), row.get("playerId")) or "") or None
+                    if pid:
+                        roster_player_ids.add(pid)
                     cur.execute(
                         """
                         INSERT INTO game_roster_entries (
@@ -200,6 +269,33 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
                             first_non_empty(row.get("backNo"), row.get("backnum")),
                         ),
                     )
+
+        team_id_by_side = {"home": home_team_id, "away": away_team_id}
+        for side, row in _iter_record_player_rows(record):
+            _upsert_player(cur, row)
+            pid = str(first_non_empty(row.get("playerCode"), row.get("pcode"), row.get("playerId")) or "") or None
+            if not pid or pid in roster_player_ids:
+                continue
+            roster_player_ids.add(pid)
+            cur.execute(
+                """
+                INSERT INTO game_roster_entries (
+                    game_id, team_id, player_id, roster_group, is_starting_pitcher,
+                    batting_order_slot, field_position_code, field_position_name, back_number
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    game_id,
+                    team_id_by_side.get(side),
+                    pid,
+                    "record_only",
+                    False,
+                    to_int(first_non_empty(row.get("batOrder"), row.get("bo")), None),
+                    None,
+                    None,
+                    None,
+                ),
+            )
 
         cur.execute("DELETE FROM raw_relay_blocks WHERE raw_game_id = %s", (raw_game_id,))
 
@@ -276,20 +372,21 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
                     ),
                 )
 
-            for track in block.get("ptsOptions") or []:
+            for track_index, track in enumerate(block.get("ptsOptions") or [], start=1):
                 cur.execute(
                     """
                     INSERT INTO raw_pitch_tracks (
-                        raw_block_id, pitch_id, inn, ballcount,
+                        raw_block_id, track_index_in_block, pitch_id, inn, ballcount,
                         cross_plate_x, cross_plate_y, top_sz, bottom_sz,
                         vx0, vy0, vz0, ax, ay, az, x0, y0, z0, stance,
                         raw_track_json
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
-                    ON CONFLICT (raw_block_id, pitch_id)
+                    ON CONFLICT (raw_block_id, track_index_in_block)
                     DO UPDATE SET
+                        pitch_id = EXCLUDED.pitch_id,
                         inn = EXCLUDED.inn,
                         ballcount = EXCLUDED.ballcount,
                         cross_plate_x = EXCLUDED.cross_plate_x,
@@ -310,6 +407,7 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
                     """,
                     (
                         raw_block_id,
+                        track_index,
                         str(track.get("pitchId")) if track.get("pitchId") is not None else None,
                         to_int(track.get("inn"), None),
                         track.get("ballcount"),
@@ -331,5 +429,4 @@ def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int
                     ),
                 )
 
-    conn.commit()
     return raw_game_id, game_id

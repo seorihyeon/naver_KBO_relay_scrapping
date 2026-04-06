@@ -1,0 +1,21 @@
+{
+  "db": {
+    "dsn": "postgresql://ID:pass@address:port/DBname"
+  },
+  "paths": {
+    "json_data_dir": "example",
+    "schema_path": "sql/schema.sql"
+  },
+  "strike_zone_rules": {
+    "2024": {
+      "top_pct": 0.5635,
+      "bottom_pct": 0.2764,
+      "width_cm": 47.18
+    },
+    "2025": {
+      "top_pct": 0.5575,
+      "bottom_pct": 0.2704,
+      "width_cm": 47.18
+    }
+  }
+}

@@ -49,6 +49,7 @@ BAT_RESULT_KEYWORDS = (
     "출루",
 )
 PA_END_KEYWORDS = BAT_RESULT_KEYWORDS + ("아웃",)
+BAT_RESULT_TYPE_CODES = {13, 23}
 
 RUNNER_EVENT_PREFIX_RE = re.compile(r"^(?:[123]루주자|타자주자)\s+")
 PICKOFF_ATTEMPT_RE = re.compile(r"^[123]루\s+견제 시도")
@@ -221,6 +222,12 @@ class EventRec:
     base3: bool
     home_score: int | None
     away_score: int | None
+    home_hits: int | None
+    away_hits: int | None
+    home_errors: int | None
+    away_errors: int | None
+    home_ball_four: int | None
+    away_ball_four: int | None
     pitch_num: int | None
     pitch_result: str | None
     pts_pitch_id: str | None
@@ -247,20 +254,29 @@ def _to_bool(value: Any) -> bool:
     return True
 
 
-def classify_event(text: str, pitch_num: int | None, pitch_result: str | None, pts_pitch_id: str | None, player_change: Any) -> str:
+def classify_event(
+    text: str,
+    pitch_num: int | None,
+    pitch_result: str | None,
+    pts_pitch_id: str | None,
+    player_change: Any,
+    type_code: int | None = None,
+) -> str:
     txt = text or ""
     if pitch_num is not None or pitch_result or pts_pitch_id:
         return "pitch"
+    if type_code in BAT_RESULT_TYPE_CODES:
+        return "bat_result"
     if player_change:
         return "substitution"
     if "비디오 판독" in txt:
         return "review"
     if "회" in txt and ("초" in txt or "말" in txt):
         return "header"
-    if _is_baserunning_text(txt):
-        return "baserunning"
     if _is_bat_result_text(txt):
         return "bat_result"
+    if _is_baserunning_text(txt):
+        return "baserunning"
     return "other"
 
 
@@ -323,12 +339,18 @@ def _fetch_events(cur: psycopg.Cursor, raw_game_id: int) -> list[EventRec]:
                 base3=b3,
                 home_score=to_int(first_non_empty(cgs.get("homeTeamScore"), cgs.get("homeScore")), None),
                 away_score=to_int(first_non_empty(cgs.get("awayTeamScore"), cgs.get("awayScore")), None),
+                home_hits=to_int(first_non_empty(cgs.get("homeHit"), cgs.get("homeHits")), None),
+                away_hits=to_int(first_non_empty(cgs.get("awayHit"), cgs.get("awayHits")), None),
+                home_errors=to_int(first_non_empty(cgs.get("homeError"), cgs.get("homeErrors")), None),
+                away_errors=to_int(first_non_empty(cgs.get("awayError"), cgs.get("awayErrors")), None),
+                home_ball_four=to_int(first_non_empty(cgs.get("homeBallFour"), cgs.get("homeWalks")), None),
+                away_ball_four=to_int(first_non_empty(cgs.get("awayBallFour"), cgs.get("awayWalks")), None),
                 pitch_num=row[8],
                 pitch_result=row[9],
                 pts_pitch_id=row[10],
                 speed_kph=row[11],
                 stuff_text=row[12],
-                category=classify_event(txt, row[8], row[9], row[10], row[13]),
+                category=classify_event(txt, row[8], row[9], row[10], row[13], row[5]),
                 raw_payload=row[14] or {},
             )
         )
@@ -337,7 +359,9 @@ def _fetch_events(cur: psycopg.Cursor, raw_game_id: int) -> list[EventRec]:
 
 def _is_pa_end(event: EventRec) -> bool:
     txt = event.text or ""
-    return event.category == "bat_result" or _is_bat_result_text(txt) or any(k in txt for k in PA_END_KEYWORDS)
+    if event.category in {"baserunning", "review", "substitution", "header"}:
+        return False
+    return event.category == "bat_result" or _is_bat_result_text(txt)
 
 
 def _event_has_pa_action(event: EventRec) -> bool:
@@ -364,8 +388,6 @@ def _event_has_pa_action(event: EventRec) -> bool:
 def _event_starts_new_pa(event: EventRec) -> bool:
     if not event.batter_id:
         return False
-    if event.category == "substitution":
-        return True
     return _event_has_pa_action(event) or _is_batter_intro_text(event.text or "")
 
 
@@ -388,6 +410,118 @@ def _resolve_baserunning_subject(
     if batter_name:
         return event.batter_id, batter_name
     return event.batter_id, None
+
+
+def _score_state(event: EventRec) -> dict[str, int | None]:
+    return {
+        "home_score": event.home_score,
+        "away_score": event.away_score,
+        "home_hits": event.home_hits,
+        "away_hits": event.away_hits,
+        "home_errors": event.home_errors,
+        "away_errors": event.away_errors,
+        "home_ball_four": event.home_ball_four,
+        "away_ball_four": event.away_ball_four,
+    }
+
+
+def _state_delta(end_value: int | None, start_value: int | None) -> int | None:
+    if end_value is None or start_value is None:
+        return None
+    return end_value - start_value
+
+
+def _normalized_pitch_id(game_id: int, source_pitch_id: str | None) -> str | None:
+    if not source_pitch_id:
+        return None
+    return f"{game_id}:{source_pitch_id}"
+
+
+def _scoreboard_walk_count_from_text(text: str | None) -> int:
+    txt = text or ""
+    if any(keyword in txt for keyword in ("몸에 맞는 볼", "볼넷", "고의4구", "자동 고의4구")):
+        return 1
+    return 0
+
+
+def _walk_count_from_text(text: str | None) -> int:
+    txt = text or ""
+    if "몸에 맞는 볼" in txt:
+        return 0
+    if any(keyword in txt for keyword in ("볼넷", "고의4구", "자동 고의4구")):
+        return 1
+    return 0
+
+
+def _parse_baserunning_bases(event: EventRec) -> tuple[str | None, str | None, str | None]:
+    text = event.text or ""
+    transition = re.search(r"([123])루주자\s*[^ :]+\s*:.*([123])루까지 진루", text)
+    if transition:
+        return transition.group(1), transition.group(2), None
+
+    home_in = re.search(r"([123])루주자\s*[^ :]+\s*:.*홈인", text)
+    if home_in:
+        return home_in.group(1), "H", None
+
+    runner_out = re.search(r"([123])루주자\s*[^ :]+\s*:.*아웃", text)
+    if runner_out:
+        return runner_out.group(1), "OUT", None
+
+    if "타자주자" in text:
+        reached_base = _batter_reached_base(text)
+        if reached_base:
+            return "B", str(reached_base), None
+        if "아웃" in text:
+            return "B", "OUT", None
+
+    if event.batter_id and "아웃" in text and ":" in text:
+        return "B", "OUT", None
+    return None, None, None
+
+
+def _parse_review_details(text: str) -> dict[str, Any]:
+    match = re.search(
+        r"(?P<start>\d{1,2}:\d{2})\s*~\s*(?P<end>\d{1,2}:\d{2})(?:\s*\((?P<minutes>\d+)분간\))?\s*(?P<team>.+?)요청 비디오 판독:\s*(?P<target>.+?)\s*관련\s*(?P<original>[^→]+)→(?P<final>.+)$",
+        text or "",
+    )
+    if not match:
+        return {}
+
+    minutes_text = match.group("minutes")
+    duration_seconds = int(minutes_text) * 60 if minutes_text else None
+    if duration_seconds is None:
+        try:
+            start_h, start_m = map(int, match.group("start").split(":"))
+            end_h, end_m = map(int, match.group("end").split(":"))
+            duration_seconds = max(0, ((end_h * 60 + end_m) - (start_h * 60 + start_m)) * 60)
+        except ValueError:
+            duration_seconds = None
+
+    return {
+        "request_team_name": match.group("team").strip(),
+        "review_target_text": match.group("target").strip(),
+        "original_call": match.group("original").strip(),
+        "final_call": match.group("final").strip(),
+        "started_at_text": match.group("start"),
+        "ended_at_text": match.group("end"),
+        "duration_seconds": duration_seconds,
+    }
+
+
+def _parse_substitution_details(raw_payload: dict[str, Any]) -> dict[str, Any]:
+    player_change = raw_payload.get("playerChange") or {}
+    in_player = player_change.get("inPlayer") or {}
+    out_player = player_change.get("outPlayer") or {}
+    return {
+        "sub_type": player_change.get("type") or "other",
+        "in_player_id": str(first_non_empty(in_player.get("playerId"), in_player.get("playerCode")) or "") or None,
+        "out_player_id": str(first_non_empty(out_player.get("playerId"), out_player.get("playerCode")) or "") or None,
+        "in_player_name": first_non_empty(in_player.get("playerName"), in_player.get("name")),
+        "out_player_name": first_non_empty(out_player.get("playerName"), out_player.get("name")),
+        "in_position": first_non_empty(in_player.get("playerPos"), in_player.get("position")),
+        "out_position": first_non_empty(out_player.get("playerPos"), out_player.get("position")),
+        "out_player_turn": out_player.get("outPlayerTurn"),
+    }
 
 
 def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
@@ -425,6 +559,60 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         for player_id, player_name in player_name_by_id.items():
             if player_name and player_name not in name_to_player_id:
                 name_to_player_id[player_name] = player_id
+        cur.execute(
+            """
+            SELECT gre.player_id, gre.team_id, gre.batting_order_slot
+            FROM game_roster_entries gre
+            WHERE gre.game_id = %s
+              AND gre.player_id IS NOT NULL
+            """,
+            (game_id,),
+        )
+        team_id_by_player_id: dict[str, int] = {}
+        batting_order_by_player_id: dict[str, int] = {}
+        for player_id, team_id, batting_order_slot in cur.fetchall():
+            if not player_id:
+                continue
+            if player_id not in team_id_by_player_id and team_id is not None:
+                team_id_by_player_id[player_id] = team_id
+            if player_id not in batting_order_by_player_id and batting_order_slot is not None:
+                batting_order_by_player_id[player_id] = batting_order_slot
+
+        cur.execute(
+            """
+            SELECT team_id, team_name_short, team_name_full
+            FROM teams
+            WHERE team_id IN (%s, %s)
+            """,
+            (home_team_id, away_team_id),
+        )
+        team_id_by_name: dict[str, int] = {}
+        for team_id, team_name_short, team_name_full in cur.fetchall():
+            for team_name in (team_name_short, team_name_full):
+                if team_name and team_name not in team_id_by_name:
+                    team_id_by_name[team_name] = team_id
+
+        cur.execute(
+            """
+            SELECT raw_block_id, home_team_win_rate, away_team_win_rate, wpa_by_plate
+            FROM raw_plate_metrics rpm
+            WHERE EXISTS (
+                SELECT 1
+                FROM raw_relay_blocks rrb
+                WHERE rrb.raw_game_id = %s
+                  AND rrb.raw_block_id = rpm.raw_block_id
+            )
+            """,
+            (raw_game_id,),
+        )
+        metric_by_block_id = {
+            row[0]: {
+                "home_win_rate_after": row[1],
+                "away_win_rate_after": row[2],
+                "wpa_by_plate": row[3],
+            }
+            for row in cur.fetchall()
+        }
 
         inning_map: dict[tuple[int, str], int] = {}
         pa_counter = 0
@@ -433,12 +621,21 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
         current_pa_key: tuple[int, str, str | None] | None = None
         current_pa_event_no = 0
         current_pa_has_action = False
-        event_id_by_pitch_id: dict[str, int] = {}
+        normalized_pitch_id_by_source: dict[str, str] = {}
         last_event_by_pa: dict[int, int] = {}
         event_seq_in_pa_by_pa: dict[int, int] = {}
         last_action_pa_id_by_half: dict[tuple[int, str], int] = {}
         runner_name_by_base = {1: None, 2: None, 3: None}
         runner_id_by_base = {1: None, 2: None, 3: None}
+        pa_start_state: dict[int, dict[str, int | None]] = {}
+        pa_end_state: dict[int, dict[str, int | None]] = {}
+        pa_raw_block_id_by_id: dict[int, int | None] = {}
+        pa_inning_id_by_id: dict[int, int] = {}
+        pa_batter_id_by_id: dict[int, str | None] = {}
+        pa_has_batter_action_by_id: dict[int, bool] = {}
+        inning_start_state: dict[int, dict[str, int | None]] = {}
+        inning_end_state: dict[int, dict[str, int | None]] = {}
+        inning_half_by_id: dict[int, str] = {}
 
         for event_seq_game, ev in enumerate(events, start = 1):
             inning_no = ev.inning_no or 0
@@ -460,6 +657,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 inning_map[in_key] = cur.fetchone()[0]
                 pa_in_half_counter[in_key] = 0
             inning_id = inning_map[in_key]
+            inning_half_by_id[inning_id] = half
+            if inning_id not in inning_start_state:
+                inning_start_state[inning_id] = _score_state(ev)
+            inning_end_state[inning_id] = _score_state(ev)
 
             pa_key = (inning_no, half, ev.batter_id)
             event_starts_new_pa = _event_starts_new_pa(ev)
@@ -540,6 +741,17 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 event_pa_id = current_pa_id
                 event_seq_in_pa = current_pa_event_no
                 event_seq_in_pa_by_pa[current_pa_id] = current_pa_event_no
+                pa_start_state[current_pa_id] = _score_state(ev)
+                pa_raw_block_id_by_id[current_pa_id] = ev.raw_block_id
+                pa_has_batter_action_by_id[current_pa_id] = False
+
+            if event_pa_id is not None and event_pa_id not in pa_start_state:
+                pa_start_state[event_pa_id] = _score_state(ev)
+                pa_raw_block_id_by_id.setdefault(event_pa_id, ev.raw_block_id)
+            if event_pa_id is not None:
+                pa_end_state[event_pa_id] = _score_state(ev)
+                pa_inning_id_by_id[event_pa_id] = inning_id
+                pa_batter_id_by_id[event_pa_id] = ev.batter_id
 
             _apply_baserunner_transition(ev.text, runner_name_by_base, runner_id_by_base, name_to_player_id)
             has_runner_transition = bool(re.search(r"[123]루주자\s*[^ :]+\s*:.*(까지 진루|홈인|아웃)", ev.text or ""))
@@ -573,10 +785,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     game_id, inning_id, pa_id, event_seq_game, event_seq_in_pa,
                     event_type_code, event_category, text, batter_id, pitcher_id,
                     outs, balls, strikes, base1_occupied, base2_occupied, base3_occupied,
-                    home_score, away_score,
+                    home_score, away_score, home_hits, away_hits, home_errors, away_errors,
                     base1_runner_id, base2_runner_id, base3_runner_id,
                     base1_runner_name, base2_runner_name, base3_runner_name, raw_event_id, raw_payload
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING event_id
                 """,
                 (
@@ -598,6 +810,10 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     ev.base3,
                     ev.home_score,
                     ev.away_score,
+                    ev.home_hits,
+                    ev.away_hits,
+                    ev.home_errors,
+                    ev.away_errors,
                     runner_id_by_base[1],
                     runner_id_by_base[2],
                     runner_id_by_base[3],
@@ -609,9 +825,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 ),
             )
             pa_event_id = cur.fetchone()[0]
-
             prev_pa_event_id = last_event_by_pa.get(event_pa_id) if event_pa_id is not None else None
-            if (
+            if False and (
                 event_pa_id is not None
                 and ev.category == "baserunning"
                 and prev_pa_event_id
@@ -671,17 +886,21 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 last_action_pa_id_by_half[in_key] = event_pa_id
 
             if ev.pts_pitch_id:
-                event_id_by_pitch_id[ev.pts_pitch_id] = pa_event_id
+                normalized_pitch_id = _normalized_pitch_id(game_id, ev.pts_pitch_id)
+                if normalized_pitch_id is None:
+                    continue
+                normalized_pitch_id_by_source[ev.pts_pitch_id] = normalized_pitch_id
                 cur.execute(
                     """
                     INSERT INTO pitches (
-                        pitch_id, game_id, inning_id, pa_id, event_id,
+                        pitch_id, source_pitch_id, game_id, inning_id, pa_id, event_id,
                         pitch_num, pitch_result, pitch_type_text, speed_kph,
                         balls_before, strikes_before, balls_after, strikes_after,
                         is_in_play, is_terminal_pitch
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (pitch_id)
                     DO UPDATE SET
+                        source_pitch_id = EXCLUDED.source_pitch_id,
                         game_id = EXCLUDED.game_id,
                         inning_id = EXCLUDED.inning_id,
                         pa_id = EXCLUDED.pa_id,
@@ -698,6 +917,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         is_terminal_pitch = EXCLUDED.is_terminal_pitch
                     """,
                     (
+                        normalized_pitch_id,
                         ev.pts_pitch_id,
                         game_id,
                         inning_id,
@@ -719,13 +939,14 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
             if ev.category == "baserunning":
                 outs_recorded = _infer_outs_recorded(ev.text)
                 runner_player_id, runner_name_raw = _resolve_baserunning_subject(ev, player_name_by_id, name_to_player_id)
+                start_base, end_base, related_fielder_sequence = _parse_baserunning_bases(ev)
                 cur.execute(
                     """
                     INSERT INTO baserunning_events (
                         game_id, inning_id, pa_id, event_id,
-                        runner_player_id, runner_name_raw, event_subtype,
+                        runner_player_id, runner_name_raw, start_base, end_base, related_fielder_sequence, event_subtype,
                         is_out, outs_recorded, caused_by_error, description
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         game_id,
@@ -734,6 +955,9 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         pa_event_id,
                         runner_player_id,
                         runner_name_raw,
+                        start_base,
+                        end_base,
+                        related_fielder_sequence,
                         "steal" if "도루" in ev.text else "advance",
                         bool(outs_recorded),
                         outs_recorded,
@@ -743,26 +967,64 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                 )
 
             if ev.category == "review":
+                review_details = _parse_review_details(ev.text)
                 cur.execute(
                     """
                     INSERT INTO review_events (
                         event_id, game_id, inning_id, pa_id,
-                        subject_type, final_call, review_target_text, description
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        request_team_id, subject_type, original_call, final_call,
+                        review_target_text, started_at_text, ended_at_text, duration_seconds, description
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (pa_event_id, game_id, inning_id, event_pa_id, "play", None, ev.text, ev.text),
+                    (
+                        pa_event_id,
+                        game_id,
+                        inning_id,
+                        event_pa_id,
+                        team_id_by_name.get(review_details.get("request_team_name", "")),
+                        "play",
+                        review_details.get("original_call"),
+                        review_details.get("final_call"),
+                        review_details.get("review_target_text", ev.text),
+                        review_details.get("started_at_text"),
+                        review_details.get("ended_at_text"),
+                        review_details.get("duration_seconds"),
+                        ev.text,
+                    ),
                 )
 
             if ev.category == "substitution":
+                substitution_details = _parse_substitution_details(ev.raw_payload)
+                team_id = (
+                    team_id_by_player_id.get(substitution_details.get("out_player_id") or "")
+                    or team_id_by_player_id.get(substitution_details.get("in_player_id") or "")
+                )
+                if substitution_details.get("in_player_id") and team_id:
+                    team_id_by_player_id[substitution_details["in_player_id"]] = team_id
                 cur.execute(
                     """
                     INSERT INTO substitution_events (
                         event_id, game_id, inning_id, pa_id,
                         team_id, sub_type, in_player_id, out_player_id,
-                        in_player_name, out_player_name, description
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        in_player_name, out_player_name, in_position, out_position, out_player_turn, description
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (pa_event_id, game_id, inning_id, event_pa_id, None, "other", None, None, None, None, ev.text),
+                    (
+                        pa_event_id,
+                        game_id,
+                        inning_id,
+                        event_pa_id,
+                        team_id,
+                        substitution_details.get("sub_type", "other"),
+                        substitution_details.get("in_player_id"),
+                        substitution_details.get("out_player_id"),
+                        substitution_details.get("in_player_name"),
+                        substitution_details.get("out_player_name"),
+                        substitution_details.get("in_position"),
+                        substitution_details.get("out_position"),
+                        substitution_details.get("out_player_turn"),
+                        ev.text,
+                    ),
                 )
 
             if ev.category == "bat_result" and event_pa_id is not None:
@@ -776,7 +1038,7 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     (
                         event_pa_id,
                         pa_event_id,
-                        ev.pts_pitch_id,
+                        _normalized_pitch_id(game_id, ev.pts_pitch_id),
                         ev.pitch_result,
                         ev.text,
                         bool("안타" in ev.text or "홈런" in ev.text),
@@ -796,8 +1058,9 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         strikes_final = %s,
                         outs_after = %s,
                         bases_after = %s,
+                        result_code = CASE WHEN %s THEN COALESCE(%s, result_code) ELSE result_code END,
                         result_text = CASE WHEN %s THEN %s ELSE result_text END,
-                        is_terminal = COALESCE(is_terminal, %s)
+                        is_terminal = CASE WHEN %s THEN TRUE ELSE COALESCE(is_terminal, FALSE) END
                     WHERE pa_id = %s
                     """,
                     (
@@ -808,6 +1071,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                         ev.outs,
                         f"{int(ev.base1)}{int(ev.base2)}{int(ev.base3)}",
                         _is_pa_end(ev),
+                        ev.pitch_result,
+                        _is_pa_end(ev),
                         ev.text,
                         _is_pa_end(ev),
                         event_pa_id,
@@ -816,6 +1081,8 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
 
             if event_pa_id == current_pa_id and _event_has_pa_action(ev):
                 current_pa_has_action = True
+            if event_pa_id == current_pa_id and ev.category in {"pitch", "bat_result"}:
+                pa_has_batter_action_by_id[event_pa_id] = True
 
             cur.execute(
                 """
@@ -851,19 +1118,21 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
             (raw_game_id,),
         )
         for tr in cur.fetchall():
-            pitch_id = tr[0]
-            if not pitch_id:
+            source_pitch_id = tr[0]
+            if not source_pitch_id:
                 continue
-            if pitch_id not in event_id_by_pitch_id:
+            normalized_pitch_id = normalized_pitch_id_by_source.get(source_pitch_id)
+            if not normalized_pitch_id:
                 continue
             cur.execute(
                 """
                 INSERT INTO pitch_tracking (
-                    pitch_id, ballcount, cross_plate_x, cross_plate_y,
+                    pitch_id, source_pitch_id, ballcount, cross_plate_x, cross_plate_y,
                     top_sz, bottom_sz, vx0, vy0, vz0, ax, ay, az, x0, y0, z0, stance
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (pitch_id)
                 DO UPDATE SET
+                    source_pitch_id = EXCLUDED.source_pitch_id,
                     ballcount = EXCLUDED.ballcount,
                     cross_plate_x = EXCLUDED.cross_plate_x,
                     cross_plate_y = EXCLUDED.cross_plate_y,
@@ -880,8 +1149,130 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
                     z0 = EXCLUDED.z0,
                     stance = EXCLUDED.stance
                 """,
-                tr,
+                (
+                    normalized_pitch_id,
+                    source_pitch_id,
+                    tr[1],
+                    tr[2],
+                    tr[3],
+                    tr[4],
+                    tr[5],
+                    tr[6],
+                    tr[7],
+                    tr[8],
+                    tr[9],
+                    tr[10],
+                    tr[11],
+                    tr[12],
+                    tr[13],
+                    tr[14],
+                    tr[15],
+                ),
             )
 
-    conn.commit()
+        pa_ids_without_action = [pa_id for pa_id, has_action in pa_has_batter_action_by_id.items() if not has_action]
+        if pa_ids_without_action:
+            cur.execute(
+                "UPDATE pa_events SET pa_id = NULL, event_seq_in_pa = NULL WHERE pa_id = ANY(%s)",
+                (pa_ids_without_action,),
+            )
+            cur.execute("UPDATE pitches SET pa_id = NULL WHERE pa_id = ANY(%s)", (pa_ids_without_action,))
+            cur.execute("UPDATE baserunning_events SET pa_id = NULL WHERE pa_id = ANY(%s)", (pa_ids_without_action,))
+            cur.execute("UPDATE review_events SET pa_id = NULL WHERE pa_id = ANY(%s)", (pa_ids_without_action,))
+            cur.execute("UPDATE substitution_events SET pa_id = NULL WHERE pa_id = ANY(%s)", (pa_ids_without_action,))
+            cur.execute("UPDATE batted_ball_results SET pa_id = NULL WHERE pa_id = ANY(%s)", (pa_ids_without_action,))
+            cur.execute("DELETE FROM plate_appearances WHERE pa_id = ANY(%s)", (pa_ids_without_action,))
+            for pa_id in pa_ids_without_action:
+                pa_start_state.pop(pa_id, None)
+                pa_end_state.pop(pa_id, None)
+                pa_raw_block_id_by_id.pop(pa_id, None)
+                pa_inning_id_by_id.pop(pa_id, None)
+                pa_batter_id_by_id.pop(pa_id, None)
+
+        cur.execute("UPDATE plate_appearances SET pa_seq_game = -pa_seq_game WHERE game_id = %s", (game_id,))
+        cur.execute(
+            """
+            WITH ranked AS (
+                SELECT
+                    pa.pa_id,
+                    ROW_NUMBER() OVER (ORDER BY pa.start_seqno, pa.pa_id) AS new_pa_seq_game,
+                    ROW_NUMBER() OVER (PARTITION BY pa.inning_id ORDER BY pa.start_seqno, pa.pa_id) AS new_pa_seq_in_half
+                FROM plate_appearances pa
+                WHERE pa.game_id = %s
+            )
+            UPDATE plate_appearances pa
+            SET pa_seq_game = ranked.new_pa_seq_game,
+                pa_seq_in_half = ranked.new_pa_seq_in_half
+            FROM ranked
+            WHERE pa.pa_id = ranked.pa_id
+            """,
+            (game_id,),
+        )
+
+        for pa_id, start_state in pa_start_state.items():
+            end_state = pa_end_state.get(pa_id, start_state)
+            raw_block_id = pa_raw_block_id_by_id.get(pa_id)
+            metric_row = metric_by_block_id.get(raw_block_id or -1, {})
+            runs_scored = None
+            if all(
+                value is not None
+                for value in (
+                    start_state.get("home_score"),
+                    start_state.get("away_score"),
+                    end_state.get("home_score"),
+                    end_state.get("away_score"),
+                )
+            ):
+                runs_scored = (end_state["home_score"] - start_state["home_score"]) + (end_state["away_score"] - start_state["away_score"])
+            cur.execute(
+                """
+                UPDATE plate_appearances
+                SET batting_order_slot = COALESCE(%s, batting_order_slot),
+                    runs_scored_on_pa = COALESCE(%s, runs_scored_on_pa),
+                    wpa_by_plate = COALESCE(%s, wpa_by_plate),
+                    home_win_rate_after = COALESCE(%s, home_win_rate_after),
+                    away_win_rate_after = COALESCE(%s, away_win_rate_after)
+                WHERE pa_id = %s
+                """,
+                (
+                    batting_order_by_player_id.get(pa_batter_id_by_id.get(pa_id) or ""),
+                    runs_scored,
+                    metric_row.get("wpa_by_plate"),
+                    metric_row.get("home_win_rate_after"),
+                    metric_row.get("away_win_rate_after"),
+                    pa_id,
+                ),
+            )
+
+        for inning_id, start_state in inning_start_state.items():
+            end_state = inning_end_state.get(inning_id, start_state)
+            half = inning_half_by_id.get(inning_id, "top")
+            if half == "top":
+                runs_scored = _state_delta(end_state.get("away_score"), start_state.get("away_score"))
+                hits_in_half = _state_delta(end_state.get("away_hits"), start_state.get("away_hits"))
+                errors_in_half = _state_delta(end_state.get("home_errors"), start_state.get("home_errors"))
+                walks_in_half = _state_delta(end_state.get("away_ball_four"), start_state.get("away_ball_four"))
+            else:
+                runs_scored = _state_delta(end_state.get("home_score"), start_state.get("home_score"))
+                hits_in_half = _state_delta(end_state.get("home_hits"), start_state.get("home_hits"))
+                errors_in_half = _state_delta(end_state.get("away_errors"), start_state.get("away_errors"))
+                walks_in_half = _state_delta(end_state.get("home_ball_four"), start_state.get("home_ball_four"))
+            cur.execute(
+                """
+                UPDATE innings
+                SET runs_scored = COALESCE(%s, runs_scored),
+                    hits_in_half = COALESCE(%s, hits_in_half),
+                    errors_in_half = COALESCE(%s, errors_in_half),
+                    walks_in_half = COALESCE(%s, walks_in_half)
+                WHERE inning_id = %s
+                """,
+                (
+                    runs_scored,
+                    hits_in_half,
+                    errors_in_half,
+                    walks_in_half,
+                    inning_id,
+                ),
+            )
+
     return game_id

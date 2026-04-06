@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS raw_text_events (
 CREATE TABLE IF NOT EXISTS raw_pitch_tracks (
     raw_pitch_track_id BIGSERIAL PRIMARY KEY,
     raw_block_id BIGINT NOT NULL REFERENCES raw_relay_blocks(raw_block_id) ON DELETE CASCADE,
+    track_index_in_block INTEGER NOT NULL,
     pitch_id TEXT,
     inn INTEGER,
     ballcount TEXT,
@@ -86,7 +87,7 @@ CREATE TABLE IF NOT EXISTS raw_pitch_tracks (
     z0 DOUBLE PRECISION,
     stance TEXT,
     raw_track_json JSONB NOT NULL,
-    UNIQUE(raw_block_id, pitch_id)
+    UNIQUE(raw_block_id, track_index_in_block)
 );
 
 CREATE TABLE IF NOT EXISTS raw_plate_metrics (
@@ -210,6 +211,7 @@ CREATE TABLE IF NOT EXISTS pa_events (
 
 CREATE TABLE IF NOT EXISTS pitches (
     pitch_id TEXT PRIMARY KEY,
+    source_pitch_id TEXT NOT NULL,
     game_id BIGINT NOT NULL REFERENCES games(game_id) ON DELETE CASCADE,
     inning_id BIGINT REFERENCES innings(inning_id),
     pa_id BIGINT REFERENCES plate_appearances(pa_id),
@@ -225,9 +227,11 @@ CREATE TABLE IF NOT EXISTS pitches (
     is_in_play BOOLEAN,
     is_terminal_pitch BOOLEAN
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pitches_game_source_pitch_id ON pitches(game_id, source_pitch_id);
 
 CREATE TABLE IF NOT EXISTS pitch_tracking (
     pitch_id TEXT PRIMARY KEY REFERENCES pitches(pitch_id) ON DELETE CASCADE,
+    source_pitch_id TEXT NOT NULL,
     ballcount TEXT,
     cross_plate_x DOUBLE PRECISION,
     cross_plate_y DOUBLE PRECISION,
@@ -316,6 +320,27 @@ CREATE TABLE IF NOT EXISTS substitution_events (
 CREATE INDEX IF NOT EXISTS idx_raw_blocks_game ON raw_relay_blocks(raw_game_id, block_index);
 CREATE INDEX IF NOT EXISTS idx_raw_events_block_seq ON raw_text_events(raw_block_id, seqno);
 CREATE INDEX IF NOT EXISTS idx_raw_pitch_tracks_pitch_id ON raw_pitch_tracks(pitch_id);
+CREATE INDEX IF NOT EXISTS idx_raw_relay_blocks_raw_game_id ON raw_relay_blocks(raw_game_id);
+CREATE INDEX IF NOT EXISTS idx_raw_text_events_raw_block_id ON raw_text_events(raw_block_id);
+CREATE INDEX IF NOT EXISTS idx_raw_pitch_tracks_raw_block_id ON raw_pitch_tracks(raw_block_id);
+CREATE INDEX IF NOT EXISTS idx_games_raw_game_id ON games(raw_game_id);
+CREATE INDEX IF NOT EXISTS idx_game_roster_entries_game_id ON game_roster_entries(game_id);
+CREATE INDEX IF NOT EXISTS idx_innings_game_id ON innings(game_id);
+CREATE INDEX IF NOT EXISTS idx_plate_appearances_game_id ON plate_appearances(game_id);
+CREATE INDEX IF NOT EXISTS idx_plate_appearances_inning_id ON plate_appearances(inning_id);
+CREATE INDEX IF NOT EXISTS idx_pa_events_game_id ON pa_events(game_id);
+CREATE INDEX IF NOT EXISTS idx_pa_events_inning_id ON pa_events(inning_id);
+CREATE INDEX IF NOT EXISTS idx_pa_events_pa_id ON pa_events(pa_id);
+CREATE INDEX IF NOT EXISTS idx_pitches_game_id ON pitches(game_id);
+CREATE INDEX IF NOT EXISTS idx_pitches_pa_id ON pitches(pa_id);
+CREATE INDEX IF NOT EXISTS idx_pitches_event_id ON pitches(event_id);
+CREATE INDEX IF NOT EXISTS idx_batted_ball_results_pa_id ON batted_ball_results(pa_id);
+CREATE INDEX IF NOT EXISTS idx_baserunning_events_game_id ON baserunning_events(game_id);
+CREATE INDEX IF NOT EXISTS idx_baserunning_events_event_id ON baserunning_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_review_events_game_id ON review_events(game_id);
+CREATE INDEX IF NOT EXISTS idx_review_events_event_id ON review_events(event_id);
+CREATE INDEX IF NOT EXISTS idx_substitution_events_game_id ON substitution_events(game_id);
+CREATE INDEX IF NOT EXISTS idx_substitution_events_event_id ON substitution_events(event_id);
 CREATE INDEX IF NOT EXISTS idx_roster_game_team ON game_roster_entries(game_id, team_id);
 CREATE INDEX IF NOT EXISTS idx_pa_game_inning ON plate_appearances(game_id, inning_id);
 CREATE INDEX IF NOT EXISTS idx_events_game_pa ON pa_events(game_id, pa_id);

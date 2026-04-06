@@ -1,4 +1,6 @@
 edgedriver_win64/
 games/
 fonts/
+config/app_config.json
+reports/
 *.py[cod]
