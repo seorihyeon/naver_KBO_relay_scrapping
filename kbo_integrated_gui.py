@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import importlib.metadata as importlib_metadata
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 
 from dpg_utils import bind_korean_font
-from tabs import AppState, CollectionTab, IngestionTab, ReplayTab
+from tabs import AppState, CollectionTab, CorrectionEditorTab, IngestionTab, ReplayTab
 
 
 class KBOIntegratedDPGApp:
@@ -14,6 +15,7 @@ class KBOIntegratedDPGApp:
         self.state = AppState.from_environment(root_dir)
 
         self.collection_tab = CollectionTab(self.state)
+        self.editor_tab = CorrectionEditorTab(self.state)
         self.ingestion_tab = IngestionTab(self.state)
         self.replay_tab = ReplayTab(self.state)
 
@@ -67,6 +69,7 @@ class KBOIntegratedDPGApp:
             dpg.configure_item("alert_detail_window", width=self.alert_detail_window_w, height=alert_detail_h, pos=(alert_x, alert_y))
 
         self.collection_tab.apply_responsive_layout(tab_content_w, tab_content_h)
+        self.editor_tab.apply_responsive_layout(tab_content_w, tab_content_h)
         self.ingestion_tab.apply_responsive_layout(tab_content_w, tab_content_h)
         self.replay_tab.apply_responsive_layout()
 
@@ -131,6 +134,7 @@ class KBOIntegratedDPGApp:
         ):
             with dpg.tab_bar(tag="main_tab_bar", callback=self.on_tab_change):
                 self.collection_tab.build(parent="main_tab_bar")
+                self.editor_tab.build(parent="main_tab_bar")
                 self.ingestion_tab.build(parent="main_tab_bar")
                 self.replay_tab.build(parent="main_tab_bar")
 
@@ -196,6 +200,17 @@ class KBOIntegratedDPGApp:
         dpg.create_viewport(title="KBO Replay QA (Graphics + Alerts)", width=self.default_viewport_w, height=self.default_viewport_h)
         dpg.setup_dearpygui()
         bind_korean_font(size=16)
+        try:
+            dpg_version = importlib_metadata.version("dearpygui")
+        except Exception:
+            dpg_version = "unknown"
+        if dpg_version != "unknown" and dpg_version <= "2.1.0":
+            self.state.set_status(
+                "warn",
+                "DearPyGui IME warning",
+                f"Detected DearPyGui {dpg_version}. Windows Korean IME can be unstable in this version. Use the IME buttons in the correction tab or upgrade DearPyGui.",
+                source="GUI",
+            )
         self.state.set_db_connection_indicator("미연결", "warn")
         dpg.set_viewport_resize_callback(self.on_viewport_resize)
         dpg.show_viewport()

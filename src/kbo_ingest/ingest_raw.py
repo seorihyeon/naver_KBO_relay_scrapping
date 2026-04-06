@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +9,7 @@ import psycopg
 from psycopg.types.json import Json
 
 from common_utils import first_non_empty, to_int
+from .game_json import load_game_payload
 
 
 def _to_float(value: Any) -> float | None:
@@ -102,7 +102,7 @@ def _upsert_player(cur: psycopg.Cursor, row: dict[str, Any]) -> None:
         (
             player_id,
             first_non_empty(row.get("playerName"), row.get("name")),
-            first_non_empty(row.get("throwBat"), row.get("throws")),
+            first_non_empty(row.get("throwBat"), row.get("throws"), row.get("batsThrows")),
             first_non_empty(row.get("hitType"), row.get("bats")),
             to_int(row.get("height"), None),
             to_int(row.get("weight"), None),
@@ -138,7 +138,7 @@ def _delete_existing_normalized_rows(cur: psycopg.Cursor, game_id: int) -> None:
 
 
 def ingest_raw_game(conn: psycopg.Connection, json_path: Path) -> tuple[int, int]:
-    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    payload = load_game_payload(json_path)
     file_hash = _file_hash(json_path)
     lineup = payload.get("lineup") or {}
     record = payload.get("record") or {}

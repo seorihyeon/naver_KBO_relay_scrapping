@@ -11,6 +11,7 @@ import traceback
 import dearpygui.dearpygui as dpg
 
 import check_data
+from src.kbo_ingest.game_json import minimize_game_payload, pretty_game_json
 from web_interface import Scrapper
 from .shared_state import AppState
 
@@ -192,11 +193,17 @@ class CollectionTab:
                         ld, ind, rd = scr.get_game_data(url)
                         if not (ld and ind and rd):
                             raise ValueError("lineup/relay/record 중 일부가 비어 있습니다.")
-                        candidate_data = {"lineup": ld, "relay": ind, "record": rd}
+                        normalized_url = Scrapper.normalize_game_url(url)
+                        candidate_data = minimize_game_payload(
+                            {"lineup": ld, "relay": ind, "record": rd},
+                            game_id=Scrapper.extract_game_id(normalized_url),
+                            game_url=normalized_url,
+                            collected_at=datetime.datetime.now(datetime.UTC).isoformat(),
+                        )
                         validation = check_data.validate_game(candidate_data)
                         if validation.get("ok"):
                             with open(target_path, "w", encoding="utf-8") as f:
-                                json.dump(candidate_data, f, ensure_ascii=False, indent=4)
+                                f.write(pretty_game_json(candidate_data))
                             self.log(f"{prefix}  검증 통과 및 저장 완료: {filename}")
                             return True
                     except Exception as ex:

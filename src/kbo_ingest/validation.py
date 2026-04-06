@@ -7,7 +7,7 @@ from typing import Any
 
 import psycopg
 
-from check_data import classify_pa_text
+from src.kbo_ingest.pa_scoring import classify_terminal_pa_text
 
 
 TABLE_NAMES = [
@@ -69,6 +69,8 @@ def _is_source_derived_issue(issue: dict[str, Any], source_problem_paths: set[st
         return True
     if code.startswith("batter_total_mismatch:"):
         return True
+    if code.startswith("pitcher_total_mismatch:"):
+        return True
     return False
 
 
@@ -97,6 +99,57 @@ def _expected_pitch_tracking_gap(entry: dict[str, Any]) -> int:
     expected_pitches = int(expected_counts.get("pitches", 0) or 0)
     expected_pitch_tracking = int(expected_counts.get("pitch_tracking", 0) or 0)
     return max(expected_pitches - expected_pitch_tracking, 0)
+
+
+BATTER_VALIDATION_STATS = ("pa", "ab", "hit", "bb", "ibb", "so", "hbp", "sh", "sf", "ci", "roe", "fc", "dp", "hr")
+PITCHER_VALIDATION_STATS = ("bf", "pa", "ab", "hit", "bb", "ibb", "so", "hbp", "hr", "bbhp")
+
+
+def _pitcher_stats_from_batter_delta(delta: dict[str, int]) -> dict[str, int]:
+    return {
+        "bf": int(delta.get("pa", 0) or 0),
+        "pa": int(delta.get("pa", 0) or 0),
+        "ab": int(delta.get("ab", 0) or 0),
+        "hit": int(delta.get("hit", 0) or 0),
+        "bb": int(delta.get("bb", 0) or 0),
+        "ibb": int(delta.get("ibb", 0) or 0),
+        "so": int(delta.get("so", 0) or 0),
+        "hbp": int(delta.get("hbp", 0) or 0),
+        "hr": int(delta.get("hr", 0) or 0),
+        "bbhp": int((delta.get("bb", 0) or 0) + (delta.get("hbp", 0) or 0)),
+    }
+
+
+def _compare_side_totals(
+    issues: list[dict[str, Any]],
+    *,
+    path: str,
+    prefix: str,
+    stats: tuple[str, ...],
+    expected: dict[str, dict[str, dict[str, int]]] | dict[str, dict[str, int]],
+    actual: dict[str, dict[str, dict[str, int]]] | dict[str, dict[str, int]],
+) -> None:
+    for side in ("home", "away"):
+        expected_side = expected.get(side, {}) if isinstance(expected, dict) else {}
+        actual_side = actual.get(side, {}) if isinstance(actual, dict) else {}
+        expected_player_ids = set(expected_side.keys())
+        actual_player_ids = set(actual_side.keys())
+        for player_id in sorted(expected_player_ids | actual_player_ids):
+            expected_row = expected_side.get(player_id, {})
+            actual_row = actual_side.get(player_id, {})
+            for stat_name in stats:
+                expected_value = int(expected_row.get(stat_name, 0) or 0)
+                actual_value = int(actual_row.get(stat_name, 0) or 0)
+                if expected_value != actual_value:
+                    issues.append(
+                        _make_issue(
+                            "normalized_logic",
+                            "aggregate",
+                            f"{prefix}:{side}:{player_id}:{stat_name}",
+                            f"{side} {player_id} {stat_name} expected {expected_value}, got {actual_value}",
+                            path=path,
+                        )
+                    )
 
 
 def _fetch_global_actual_counts(cur: psycopg.Cursor) -> dict[str, int]:
@@ -462,14 +515,17 @@ def _validate_normalized_game(cur: psycopg.Cursor, entry: dict[str, Any], game_i
 
     cur.execute(
         """
-        SELECT i.half, pa.result_text, COALESCE(pa.is_terminal, FALSE)
+        SELECT i.half, pa.batter_id, pa.pitcher_id, pa.result_text, COALESCE(pa.is_terminal, FALSE)
         FROM plate_appearances pa
         JOIN innings i ON i.inning_id = pa.inning_id
         WHERE pa.game_id = %s
         """,
         (game_id,),
     )
-    db_batter_totals = {"home": Counter(), "away": Counter()}
+    actual_batter_team_totals = {"home": Counter(), "away": Counter()}
+    actual_pitcher_team_totals = {"home": Counter(), "away": Counter()}
+    actual_batter_totals_by_player: dict[str, dict[str, Counter]] = {"home": {}, "away": {}}
+    actual_pitcher_totals_by_player: dict[str, dict[str, Counter]] = {"home": {}, "away": {}}
     expected_terminal_pa_count = int(entry.get("expected_terminal_plate_appearances", 0))
     expected_partial_pa_count = int(entry.get("expected_partial_plate_appearances", 0))
     empty_result_text_count = 0
@@ -477,7 +533,9 @@ def _validate_normalized_game(cur: psycopg.Cursor, entry: dict[str, Any], game_i
     nonterminal_pa_count = 0
     terminal_empty_result_text_count = 0
     nonterminal_with_result_text_count = 0
-    for half, result_text, is_terminal in cur.fetchall():
+    terminal_missing_batter_id_count = 0
+    terminal_missing_pitcher_id_count = 0
+    for half, batter_id, pitcher_id, result_text, is_terminal in cur.fetchall():
         if is_terminal:
             terminal_pa_count += 1
         else:
@@ -490,8 +548,19 @@ def _validate_normalized_game(cur: psycopg.Cursor, entry: dict[str, Any], game_i
         if not is_terminal:
             nonterminal_with_result_text_count += 1
         side = "away" if half == "top" else "home"
-        delta = classify_pa_text(result_text)
-        db_batter_totals[side].update(delta)
+        defense_side = "home" if side == "away" else "away"
+        delta = dict(classify_terminal_pa_text(result_text).stats)
+        pitcher_delta = _pitcher_stats_from_batter_delta(delta)
+        actual_batter_team_totals[side].update(delta)
+        actual_pitcher_team_totals[defense_side].update(pitcher_delta)
+        if batter_id:
+            actual_batter_totals_by_player[side].setdefault(str(batter_id), Counter()).update(delta)
+        elif is_terminal:
+            terminal_missing_batter_id_count += 1
+        if pitcher_id:
+            actual_pitcher_totals_by_player[defense_side].setdefault(str(pitcher_id), Counter()).update(pitcher_delta)
+        elif is_terminal:
+            terminal_missing_pitcher_id_count += 1
 
     if terminal_pa_count != expected_terminal_pa_count:
         issues.append(
@@ -544,21 +613,76 @@ def _validate_normalized_game(cur: psycopg.Cursor, entry: dict[str, Any], game_i
             )
         )
 
-    for side in ("home", "away"):
-        expected_totals = (entry.get("expected_batter_totals") or entry.get("relay_batter_totals") or {}).get(side, {})
-        for stat_name in ("pa", "ab", "hit", "bb", "so", "hbp"):
-            expected_value = int(expected_totals.get(stat_name, 0) or 0)
-            actual_value = int(db_batter_totals[side].get(stat_name, 0))
-            if expected_value != actual_value:
-                issues.append(
-                    _make_issue(
-                        "normalized_logic",
-                        "aggregate",
-                        f"batter_total_mismatch:{side}:{stat_name}",
-                        f"{side} {stat_name} expected {expected_value}, got {actual_value}",
-                        path=path,
-                    )
-                )
+    if terminal_missing_batter_id_count:
+        issues.append(
+            _make_issue(
+                "normalized_logic",
+                "aggregate",
+                "terminal_pa_missing_batter_id",
+                f"terminal plate_appearances with NULL batter_id={terminal_missing_batter_id_count}",
+                path=path,
+            )
+        )
+    if terminal_missing_pitcher_id_count:
+        issues.append(
+            _make_issue(
+                "normalized_logic",
+                "aggregate",
+                "terminal_pa_missing_pitcher_id",
+                f"terminal plate_appearances with NULL pitcher_id={terminal_missing_pitcher_id_count}",
+                path=path,
+            )
+        )
+
+    expected_batter_totals = entry.get("expected_batter_totals") or entry.get("relay_batter_totals") or {}
+    expected_batter_by_player = entry.get("expected_batter_totals_by_player") or {"home": {}, "away": {}}
+    actual_batter_with_team = {
+        side: {
+            "TEAM": dict(actual_batter_team_totals[side]),
+            **{player_id: dict(row) for player_id, row in actual_batter_totals_by_player[side].items()},
+        }
+        for side in ("home", "away")
+    }
+    expected_batter_with_team = {
+        side: {
+            "TEAM": dict((expected_batter_totals or {}).get(side, {})),
+            **{player_id: dict(row) for player_id, row in (expected_batter_by_player or {}).get(side, {}).items()},
+        }
+        for side in ("home", "away")
+    }
+    _compare_side_totals(
+        issues,
+        path=path,
+        prefix="batter_total_mismatch",
+        stats=BATTER_VALIDATION_STATS,
+        expected=expected_batter_with_team,
+        actual=actual_batter_with_team,
+    )
+
+    expected_pitcher_totals = entry.get("expected_pitcher_totals") or entry.get("record_pitcher_totals") or {}
+    expected_pitcher_by_player = entry.get("expected_pitcher_totals_by_player") or {"home": {}, "away": {}}
+    actual_pitcher_with_team = {
+        side: {
+            "TEAM": dict(actual_pitcher_team_totals[side]),
+            **{player_id: dict(row) for player_id, row in actual_pitcher_totals_by_player[side].items()},
+        }
+        for side in ("home", "away")
+    }
+    expected_pitcher_with_team = {
+        side: {
+            "TEAM": dict((expected_pitcher_totals or {}).get(side, {})),
+            **{player_id: dict(row) for player_id, row in (expected_pitcher_by_player or {}).get(side, {}).items()},
+        }
+        for side in ("home", "away")
+    }
+    _compare_side_totals(
+        issues,
+        path=path,
+        prefix="pitcher_total_mismatch",
+        stats=PITCHER_VALIDATION_STATS,
+        expected=expected_pitcher_with_team,
+        actual=actual_pitcher_with_team,
+    )
 
     cur.execute(
         """

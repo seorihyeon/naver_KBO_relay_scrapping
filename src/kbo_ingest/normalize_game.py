@@ -15,6 +15,7 @@ except ModuleNotFoundError:  # pragma: no cover - test env fallback
         return value
 
 from common_utils import first_non_empty, to_int
+from .pa_scoring import score_scoring_events, scoring_event_from_mapping
 
 
 BASERUN_KEYWORDS = ("도루", "진루", "홈인", "견제", "태그아웃", "포스아웃", "주루사", "협살")
@@ -429,6 +430,32 @@ def _state_delta(end_value: int | None, start_value: int | None) -> int | None:
     if end_value is None or start_value is None:
         return None
     return end_value - start_value
+
+
+def _score_event_records(events: list[EventRec]):
+    return score_scoring_events(
+        scoring_event_from_mapping(
+            {
+                "inning_no": ev.inning_no,
+                "half": ev.half,
+                "seqno": ev.seqno,
+                "type_code": ev.type_code,
+                "event_category": ev.category,
+                "text": ev.text,
+                "batter_id": ev.batter_id,
+                "pitcher_id": ev.pitcher_id,
+                "balls": ev.balls,
+                "strikes": ev.strikes,
+                "outs": ev.outs,
+                "base1": ev.base1,
+                "base2": ev.base2,
+                "base3": ev.base3,
+                "raw_payload": ev.raw_payload,
+            }
+        )
+        for ev in events
+        if ev.half in {"top", "bottom"} and ev.inning_no is not None
+    )
 
 
 def _normalized_pitch_id(game_id: int, source_pitch_id: str | None) -> str | None:
@@ -1208,6 +1235,37 @@ def normalize_game_from_raw(conn: psycopg.Connection, raw_game_id: int) -> int:
             """,
             (game_id,),
         )
+
+        scored_pas = _score_event_records(events).scored_plate_appearances
+        cur.execute(
+            """
+            SELECT pa.pa_id, i.inning_no, i.half, pa.start_seqno
+            FROM plate_appearances pa
+            JOIN innings i ON i.inning_id = pa.inning_id
+            WHERE pa.game_id = %s
+            """,
+            (game_id,),
+        )
+        pa_id_by_key = {(int(inning_no), half, int(start_seqno)): int(pa_id) for pa_id, inning_no, half, start_seqno in cur.fetchall()}
+        for scored_pa in scored_pas:
+            if not scored_pa.is_terminal:
+                continue
+            pa_id = pa_id_by_key.get((int(scored_pa.inning_no), scored_pa.half, int(scored_pa.start_seqno)))
+            if pa_id is None:
+                continue
+            credited_batter_id = scored_pa.batter_credit_owner_id or scored_pa.finishing_batter_id
+            credited_pitcher_id = scored_pa.pitcher_credit_owner_id or scored_pa.finishing_pitcher_id
+            cur.execute(
+                """
+                UPDATE plate_appearances
+                SET batter_id = COALESCE(%s, batter_id),
+                    pitcher_id = COALESCE(%s, pitcher_id)
+                WHERE pa_id = %s
+                """,
+                (credited_batter_id, credited_pitcher_id, pa_id),
+            )
+            if credited_batter_id:
+                pa_batter_id_by_id[pa_id] = credited_batter_id
 
         for pa_id, start_state in pa_start_state.items():
             end_state = pa_end_state.get(pa_id, start_state)

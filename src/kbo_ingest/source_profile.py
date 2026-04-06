@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-from collections import Counter
 import hashlib
-import json
 from pathlib import Path
 from typing import Any
 
 from check_data import (
-    build_batter_stats_from_relay,
-    classify_pa_text,
     extract_lineup_players,
     extract_record_batters,
     extract_record_pitchers,
@@ -17,8 +13,10 @@ from check_data import (
 )
 from common_utils import to_int
 
+from .game_json import load_game_payload
 from .ingest_raw import _parse_game_date, _to_bool_flag, _iter_relay_blocks
-from .normalize_game import _is_batter_intro_text, classify_event
+from .normalize_game import classify_event
+from .pa_scoring import score_relay_plate_appearances
 
 
 def _file_hash(path: Path) -> str:
@@ -86,83 +84,26 @@ def _event_starts_new_pa(event: dict[str, Any], category: str) -> bool:
 
 
 def _build_expected_pa_profile(raw_blocks: list[tuple[int, dict[str, Any]]]) -> dict[str, Any]:
-    partial_count = 0
-    terminal_count = 0
-    current_pa: dict[str, Any] | None = None
-    batter_totals = {"home": Counter(), "away": Counter()}
-    last_terminal_signature: tuple[Any, ...] | None = None
-
-    def finalize_current_pa() -> None:
-        nonlocal partial_count, current_pa
-        if current_pa and current_pa.get("has_action") and not current_pa.get("is_terminal"):
-            partial_count += 1
-        current_pa = None
-
-    for _, block in raw_blocks:
-        inning_no = int(block.get("inn") or 0)
-        half = _normalize_half(block.get("homeOrAway"))
-        in_key = (inning_no, half)
-        offense_side = "away" if half == "top" else "home"
-        if current_pa and current_pa.get("in_key") != in_key:
-            finalize_current_pa()
-
-        for event in block.get("textOptions") or []:
-            category = _event_category(event)
-            batter_id = _event_batter_id(event)
-            event_starts_new_pa = _event_starts_new_pa(event, category)
-            has_pa_action = category in {"pitch", "bat_result"}
-
-            if event_starts_new_pa:
-                if current_pa is None:
-                    current_pa = {
-                        "in_key": in_key,
-                        "offense_side": offense_side,
-                        "batter_id": batter_id,
-                        "has_action": has_pa_action,
-                        "is_terminal": False,
-                    }
-                elif current_pa.get("in_key") == in_key and current_pa.get("batter_id") == batter_id:
-                    current_pa["has_action"] = current_pa.get("has_action") or has_pa_action
-                elif current_pa.get("in_key") == in_key and not current_pa.get("has_action"):
-                    current_pa["offense_side"] = offense_side
-                    current_pa["batter_id"] = batter_id
-                    current_pa["has_action"] = has_pa_action
-                else:
-                    finalize_current_pa()
-                    current_pa = {
-                        "in_key": in_key,
-                        "offense_side": offense_side,
-                        "batter_id": batter_id,
-                        "has_action": has_pa_action,
-                        "is_terminal": False,
-                    }
-
-                if category == "bat_result":
-                    signature = (
-                        in_key,
-                        batter_id,
-                        event.get("text") or "",
-                        (event.get("currentGameState") or {}).get("out"),
-                        (event.get("currentGameState") or {}).get("ball"),
-                        (event.get("currentGameState") or {}).get("strike"),
-                        (event.get("currentGameState") or {}).get("base1"),
-                        (event.get("currentGameState") or {}).get("base2"),
-                        (event.get("currentGameState") or {}).get("base3"),
-                    )
-                    if signature != last_terminal_signature:
-                        terminal_count += 1
-                        batter_totals[offense_side].update(classify_pa_text(event.get("text") or ""))
-                        last_terminal_signature = signature
-                    current_pa["is_terminal"] = True
-                    current_pa = None
-
-    finalize_current_pa()
+    relay = [[block for _, block in raw_blocks]]
+    summary = score_relay_plate_appearances(relay)
     return {
-        "terminal_plate_appearances": terminal_count,
-        "partial_plate_appearances": partial_count,
+        "terminal_plate_appearances": int(summary.terminal_plate_appearances),
+        "partial_plate_appearances": int(summary.partial_plate_appearances),
         "batter_totals": {
-            "home": dict(batter_totals["home"]),
-            "away": dict(batter_totals["away"]),
+            "home": dict(summary.batter_team_totals["home"]),
+            "away": dict(summary.batter_team_totals["away"]),
+        },
+        "batter_totals_by_player": {
+            "home": {player_id: dict(row) for player_id, row in summary.batter_totals_by_side["home"].items()},
+            "away": {player_id: dict(row) for player_id, row in summary.batter_totals_by_side["away"].items()},
+        },
+        "pitcher_totals": {
+            "home": dict(summary.pitcher_team_totals["home"]),
+            "away": dict(summary.pitcher_team_totals["away"]),
+        },
+        "pitcher_totals_by_player": {
+            "home": {player_id: dict(row) for player_id, row in summary.pitcher_totals_by_side["home"].items()},
+            "away": {player_id: dict(row) for player_id, row in summary.pitcher_totals_by_side["away"].items()},
         },
     }
 
@@ -198,7 +139,7 @@ def _build_inning_expectations(events_by_half: dict[tuple[int, str], list[dict[s
 
 
 def build_source_profile(json_path: Path, *, project_root: Path | None = None) -> dict[str, Any]:
-    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    payload = load_game_payload(json_path)
     lineup = payload.get("lineup") or {}
     record = payload.get("record") or {}
     relay = payload.get("relay") or []
@@ -207,7 +148,7 @@ def build_source_profile(json_path: Path, *, project_root: Path | None = None) -
     lineup_info = extract_lineup_players(lineup)
     record_batters = extract_record_batters(record.get("batter", {}))
     record_pitchers = extract_record_pitchers(record.get("pitcher", {}))
-    relay_batters = build_batter_stats_from_relay(relay)
+    relay_scoring = score_relay_plate_appearances(relay)
     source_validation = validate_source_json(payload)
     scoreboard = get_final_scoreboard_from_relay(relay) or {}
 
@@ -283,8 +224,8 @@ def build_source_profile(json_path: Path, *, project_root: Path | None = None) -
         "away": {key: int(value or 0) for key, value in (record_batters.get("awayTotal") or {}).items() if key in {"ab", "hit", "rbi", "run", "sb"}},
     }
     relay_batter_totals = {
-        "home": _sum_player_stats(relay_batters["home"]),
-        "away": _sum_player_stats(relay_batters["away"]),
+        "home": _sum_player_stats(relay_scoring.batter_totals_by_side["home"]),
+        "away": _sum_player_stats(relay_scoring.batter_totals_by_side["away"]),
     }
     expected_pa_profile = _build_expected_pa_profile(raw_blocks)
     terminal_plate_appearance_count = int(expected_pa_profile["terminal_plate_appearances"])
@@ -355,6 +296,9 @@ def build_source_profile(json_path: Path, *, project_root: Path | None = None) -
         "record_pitcher_totals": record_pitcher_totals,
         "relay_batter_totals": relay_batter_totals,
         "expected_batter_totals": expected_pa_profile["batter_totals"],
+        "expected_batter_totals_by_player": expected_pa_profile["batter_totals_by_player"],
+        "expected_pitcher_totals": expected_pa_profile["pitcher_totals"],
+        "expected_pitcher_totals_by_player": expected_pa_profile["pitcher_totals_by_player"],
         "expected_terminal_plate_appearances": terminal_plate_appearance_count,
         "expected_partial_plate_appearances": partial_plate_appearance_count,
         "expected_null_counts": {

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from common_utils import to_int
+from src.kbo_ingest.game_json import load_game_payload, minimize_game_payload
+from src.kbo_ingest.pa_scoring import classify_terminal_pa_text, score_relay_plate_appearances
 
 
 def ip_str_to_outs(ip: Any) -> int:
@@ -150,6 +152,16 @@ def extract_record_pitchers(pitcher_block: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def classify_pa_text(text: str) -> Dict[str, int]:
+    result = classify_terminal_pa_text(text or "")
+    stats = result.stats
+    return {
+        "pa": int(stats.get("pa", 0) or 0),
+        "ab": int(stats.get("ab", 0) or 0),
+        "hit": int(stats.get("hit", 0) or 0),
+        "bb": int(stats.get("bb", 0) or 0),
+        "so": int(stats.get("so", 0) or 0),
+        "hbp": int(stats.get("hbp", 0) or 0),
+    }
     """
     중계 text(type 13/23 기준)에서 타석 결과를 단순 분류한다.
     """
@@ -188,6 +200,19 @@ def classify_pa_text(text: str) -> Dict[str, int]:
 
 
 def build_batter_stats_from_relay(relay: List[List[Dict[str, Any]]]) -> Dict[str, Dict[str, Dict[str, int]]]:
+    summary = score_relay_plate_appearances(relay)
+    result: Dict[str, Dict[str, Dict[str, int]]] = {"home": {}, "away": {}}
+    for side in ("home", "away"):
+        for player_id, row in summary.batter_totals_by_side[side].items():
+            result[side][player_id] = {
+                "pa": int(row.get("pa", 0) or 0),
+                "ab": int(row.get("ab", 0) or 0),
+                "hit": int(row.get("hit", 0) or 0),
+                "bb": int(row.get("bb", 0) or 0),
+                "so": int(row.get("so", 0) or 0),
+                "hbp": int(row.get("hbp", 0) or 0),
+            }
+    return result
     """
     relay에서 type 13/23 이벤트만 사용해 타자별 간이 스탯을 집계한다.
     """
@@ -217,6 +242,25 @@ def build_batter_stats_from_relay(relay: List[List[Dict[str, Any]]]) -> Dict[str
                 for key, value in delta.items():
                     bucket[key] += value
 
+    return result
+
+
+def build_pitcher_stats_from_relay(relay: List[List[Dict[str, Any]]]) -> Dict[str, Dict[str, Dict[str, int]]]:
+    summary = score_relay_plate_appearances(relay)
+    result: Dict[str, Dict[str, Dict[str, int]]] = {"home": {}, "away": {}}
+    for side in ("home", "away"):
+        for player_id, row in summary.pitcher_totals_by_side[side].items():
+            result[side][player_id] = {
+                "bf": int(row.get("bf", 0) or 0),
+                "pa": int(row.get("pa", 0) or 0),
+                "ab": int(row.get("ab", 0) or 0),
+                "hit": int(row.get("hit", 0) or 0),
+                "bb": int(row.get("bb", 0) or 0),
+                "kk": int(row.get("so", 0) or 0),
+                "hr": int(row.get("hr", 0) or 0),
+                "bbhp": int(row.get("bbhp", 0) or 0),
+                "hbp": int(row.get("hbp", 0) or 0),
+            }
     return result
 
 
@@ -456,6 +500,36 @@ def check_relay_vs_record_batter(relay_bats: Dict[str, Any], record_bats: Dict[s
     return issues, warnings
 
 
+def check_relay_vs_record_pitcher_stats(relay_pits: Dict[str, Any], record_pits: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    issues: List[str] = []
+    warnings: List[str] = []
+
+    for side in ("home", "away"):
+        relay_codes = set(relay_pits[side].keys())
+        record_codes = set(record_pits[side].keys())
+
+        for pcode in sorted(relay_codes & record_codes):
+            relay_row = relay_pits[side][pcode]
+            record_row = record_pits[side][pcode]
+
+            for record_field, relay_field in (
+                ("pa", "pa"),
+                ("ab", "ab"),
+                ("hit", "hit"),
+                ("bb", "bb"),
+                ("kk", "kk"),
+                ("hr", "hr"),
+                ("bbhp", "bbhp"),
+            ):
+                if int(relay_row.get(relay_field, 0) or 0) != int(record_row.get(record_field, 0) or 0):
+                    issues.append(
+                        f"[{side}] 투수 {pcode} {record_row['name']} {record_field} 불일치 "
+                        f"relay={relay_row.get(relay_field, 0)}, record={record_row.get(record_field, 0)}"
+                    )
+
+    return issues, warnings
+
+
 def check_lineup_vs_record_pitcher(lineup_info: Dict[str, Any], record_pits: Dict[str, Any]) -> Tuple[List[str], List[str]]:
     """
     투수 검증은 '등판 가능한 로스터' 기준으로 본다.
@@ -570,6 +644,7 @@ def check_pitchers_vs_scoreboard(record_pits: Dict[str, Any], scoreboard: Dict[s
 
 
 def validate_game(game: Dict[str, Any]) -> Dict[str, Any]:
+    game = minimize_game_payload(game)
     issues: List[str] = []
     warnings: List[str] = []
 
@@ -588,6 +663,7 @@ def validate_game(game: Dict[str, Any]) -> Dict[str, Any]:
     record_bats = extract_record_batters(record.get("batter", {}))
     record_pits = extract_record_pitchers(record.get("pitcher", {}))
     relay_bats = build_batter_stats_from_relay(relay)
+    relay_pit_stats = build_pitcher_stats_from_relay(relay)
     relay_pitchers = collect_pitcher_codes_from_relay(relay)
     scoreboard = get_final_scoreboard_from_relay(relay)
     game_info = lineup_info["game_info"]
@@ -615,6 +691,10 @@ def validate_game(game: Dict[str, Any]) -> Dict[str, Any]:
     issues.extend(i)
     warnings.extend(w)
 
+    i, w = check_relay_vs_record_pitcher_stats(relay_pit_stats, record_pits)
+    issues.extend(i)
+    warnings.extend(w)
+
     issues.extend(check_pitchers_vs_batters(record_pits, record_bats))
     issues.extend(check_pitchers_vs_scoreboard(record_pits, scoreboard))
 
@@ -626,9 +706,7 @@ def validate_game(game: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def validate_json_file(json_path: Path) -> Dict[str, Any]:
-    with json_path.open("r", encoding="utf-8") as f:
-        game = json.load(f)
-
+    game = load_game_payload(json_path)
     result = validate_game(game)
     return {
         "file": str(json_path),

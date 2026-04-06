@@ -11,15 +11,28 @@ TEXTURE_SHAPES = {}
 
 
 def bind_korean_font(size=16, candidates=None):
+    base_dir = Path(__file__).resolve().parent
     if candidates is None:
         candidates = [
-            r"fonts/NanumGothic.otf",
-            r"fonts/NanumGothic.ttf",
+            base_dir / "fonts" / "NanumGothic.otf",
+            base_dir / "fonts" / "NanumGothic.ttf",
+            Path(r"C:\Windows\Fonts\malgun.ttf"),
+            Path(r"C:\Windows\Fonts\malgunbd.ttf"),
+            Path(r"C:\Windows\Fonts\gulim.ttc"),
         ]
 
-    font_path = next((p for p in candidates if os.path.exists(p)), None)
+    resolved_candidates: list[Path] = []
+    for candidate in candidates:
+        path = Path(candidate)
+        if path.is_absolute():
+            resolved_candidates.append(path)
+            continue
+        resolved_candidates.append((base_dir / path).resolve())
+        resolved_candidates.append(path.resolve())
+
+    font_path = next((str(path) for path in resolved_candidates if os.path.exists(path)), None)
     if not font_path:
-        print("[WARN] 한글 폰트를 찾지 못했습니다.")
+        print("[WARN] Korean font not found")
         return None
 
     with dpg.font_registry():
@@ -29,6 +42,59 @@ def bind_korean_font(size=16, candidates=None):
 
     dpg.bind_font(korean_font)
     return korean_font
+
+
+def prompt_native_text(*, title: str, initial_value: str = "", multiline: bool = False) -> str | None:
+    try:
+        import tkinter as tk
+        from tkinter import simpledialog
+        from tkinter.scrolledtext import ScrolledText
+    except Exception:
+        return None
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    result: dict[str, str | None] = {"value": None}
+
+    try:
+        if not multiline:
+            value = simpledialog.askstring(title=title, prompt=title, initialvalue=initial_value, parent=root)
+            return value
+
+        dialog = tk.Toplevel(root)
+        dialog.title(title)
+        dialog.geometry("720x420")
+        dialog.attributes("-topmost", True)
+        dialog.grab_set()
+
+        text = ScrolledText(dialog, wrap="word", font=("Malgun Gothic", 12))
+        text.pack(fill="both", expand=True, padx=12, pady=(12, 8))
+        text.insert("1.0", initial_value or "")
+        text.focus_set()
+
+        button_row = tk.Frame(dialog)
+        button_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def on_ok(_event=None):
+            result["value"] = text.get("1.0", "end-1c")
+            dialog.destroy()
+
+        def on_cancel(_event=None):
+            dialog.destroy()
+
+        ok_btn = tk.Button(button_row, text="OK", width=10, command=on_ok)
+        ok_btn.pack(side="right")
+        cancel_btn = tk.Button(button_row, text="Cancel", width=10, command=on_cancel)
+        cancel_btn.pack(side="right", padx=(0, 8))
+
+        dialog.bind("<Control-Return>", on_ok)
+        dialog.bind("<Escape>", on_cancel)
+        dialog.protocol("WM_DELETE_WINDOW", on_cancel)
+        root.wait_window(dialog)
+        return result["value"]
+    finally:
+        root.destroy()
 
 
 def create_or_replace_dynamic_texture(tex_tag, width, height, rgba_data):
@@ -56,7 +122,7 @@ def load_image_pixels(image_path, width, height, base_dir=None):
         p = Path(base_dir) / p if base_dir else p
     p = p.resolve()
     if not p.exists():
-        raise FileNotFoundError(f"이미지 파일 없음: {p}")
+        raise FileNotFoundError(f"Image file not found: {p}")
 
     img = Image.open(p).convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
     pixels = []
