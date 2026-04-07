@@ -1,437 +1,309 @@
 from __future__ import annotations
 
-import calendar
-import datetime
-import json
-import os
-import queue
-import threading
-import traceback
+from dataclasses import dataclass
+import datetime as dt
+from pathlib import Path
+from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
-import check_data
-from src.kbo_ingest.game_json import minimize_game_payload, pretty_game_json
-from web_interface import Scrapper
+from gui.collection_service import CollectionRequest, CollectionService, CollectionTarget
+from gui.components import DatePicker, FileSelector, LogPanel, ProgressPanel, SummaryCard
+from gui.jobs import JobEvent, JobHandle, JobRunner, JobSnapshot
+from gui.tags import TagNamespace
 from .shared_state import AppState
 
 
+@dataclass
+class CollectionViewModel:
+    mode: str = "period"
+    save_dir: str = "games"
+    timeout_seconds: int = 8
+    retry_count: int = 3
+    headless: bool = True
+    start_date: str = dt.date.today().strftime("%Y-%m-%d")
+    end_date: str = dt.date.today().strftime("%Y-%m-%d")
+    single_date: str = dt.date.today().strftime("%Y-%m-%d")
+    season_year: str = str(dt.date.today().year)
+
+
 class CollectionTab:
-    def __init__(self, state: AppState):
+    key = "collection"
+    label = "Collection"
+
+    def __init__(self, state: AppState, job_runner: JobRunner | None = None, request_layout: Callable[[], None] | None = None):
         self.state = state
-        self.msg_q = queue.Queue()
-        self.stop_flag = threading.Event()
-        self.worker = None
-
-        today = datetime.date.today()
-        self.cal_year = today.year
-        self.cal_month = today.month
-        self.cal_target_input = None
-
-        self.modes = {"기간": "period", "특정 날짜": "single", "시즌": "season"}
-
-    def apply_responsive_layout(self, content_w: int, content_h: int):
-        available_w = max(720, int(content_w) - 36)
-        log_reserved_h = 360
-        if dpg.does_item_exist(self._t("group_season")) and dpg.is_item_shown(self._t("group_season")):
-            log_reserved_h = 330
-        elif dpg.does_item_exist(self._t("group_single")) and dpg.is_item_shown(self._t("group_single")):
-            log_reserved_h = 338
-
-        save_dir_w = max(220, min(460, available_w - 220))
-        log_h = max(120, int(content_h) - log_reserved_h)
-
-        if dpg.does_item_exist(self._t("save_dir")):
-            dpg.configure_item(self._t("save_dir"), width=save_dir_w)
-        if dpg.does_item_exist(self._t("progress_bar")):
-            dpg.configure_item(self._t("progress_bar"), width=max(240, available_w - 4))
-        if dpg.does_item_exist(self._t("log_window")):
-            dpg.configure_item(self._t("log_window"), height=log_h)
-
-    def _t(self, name: str) -> str:
-        return f"col_{name}"
-
-    def log(self, msg):
-        self.msg_q.put(msg)
-
-    def _channel_from_message(self, message: str) -> str:
-        txt = str(message)
-        if "[오류]" in txt or "실패" in txt or "예외" in txt:
-            return "error"
-        if "[중지]" in txt or "없습니다" in txt or "유효하지" in txt:
-            return "warn"
-        return "info"
-
-    def debug_log(self, debug_log_path, msg):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with open(debug_log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] {msg}\n")
-
-    def message_pump(self):
-        try:
-            while True:
-                m = self.msg_q.get_nowait()
-                if isinstance(m, tuple):
-                    tag, val = m
-                    if tag == "progress":
-                        dpg.configure_item(self._t("progress_bar"), default_value=float(val))
-                        self.state.set_status("info", "데이터 수집 진행", f"진행률: {int(float(val) * 100)}%", source="데이터 수집")
-                    elif tag == "done":
-                        for item in self.disable_items:
-                            dpg.configure_item(item, enabled=True)
-                        dpg.configure_item(self._t("btn_stop"), enabled=False)
-                        dpg.configure_item(self._t("progress_bar"), overlay="완료")
-                else:
-                    prev = dpg.get_value(self._t("log"))
-                    prev = (prev + "\n" if prev else "") + str(m)
-                    dpg.set_value(self._t("log"), prev)
-                    dpg.set_y_scroll(self._t("log_window"), 1.0)
-                    channel = self._channel_from_message(str(m))
-                    self.state.set_status(channel, "데이터 수집 이벤트", str(m), source="데이터 수집")
-        except queue.Empty:
-            pass
-
-    def pick_day(self, sender, app_data, user_data):
-        day = user_data
-        if day is None:
-            return
-        dpg.set_value(self.cal_target_input, f"{self.cal_year:04d}-{self.cal_month:02d}-{day:02d}")
-        dpg.configure_item(self._t("calendar_modal"), show=False)
-
-    def render_calendar(self):
-        y, m = self.cal_year, self.cal_month
-        dpg.set_value(self._t("calendar_header"), f"{y}년 {m:02d}")
-        dpg.delete_item(self._t("calendar_grid"), children_only=True)
-
-        with dpg.group(horizontal=True, parent=self._t("calendar_grid")):
-            for wd in ["월", "화", "수", "목", "금", "토", "일"]:
-                dpg.add_button(label=wd, width=34, height=20, enabled=False)
-
-        cal = calendar.Calendar(firstweekday=0)
-        weeks = cal.monthdayscalendar(y, m)
-        today = datetime.date.today()
-        same_month = y == today.year and m == today.month
-
-        for week in weeks:
-            with dpg.group(horizontal=True, parent=self._t("calendar_grid")):
-                for day in week:
-                    if day == 0:
-                        dpg.add_button(label=" ", width=34, height=26, enabled=False)
-                        continue
-                    label = f"[{day:2d}]" if same_month and day == today.day else f"{day:2d}"
-                    is_future = datetime.date(y, m, day) > today
-                    dpg.add_button(label=label, width=34, height=26, enabled=not is_future, callback=self.pick_day, user_data=day)
-
-    def open_calendar(self, target_input):
-        self.cal_target_input = target_input
-        try:
-            base = datetime.datetime.strptime(dpg.get_value(target_input), "%Y-%m-%d").date()
-        except Exception:
-            base = datetime.date.today()
-        self.cal_year, self.cal_month = base.year, base.month
-        self.render_calendar()
-        dpg.configure_item(self._t("calendar_modal"), show=True)
-
-    def calendar_prev(self):
-        self.cal_month -= 1
-        if self.cal_month == 0:
-            self.cal_month = 12
-            self.cal_year -= 1
-        self.render_calendar()
-
-    def calendar_next(self):
-        y, m = self.cal_year, self.cal_month
-        m += 1
-        if m == 13:
-            y, m = y + 1, 1
-        if datetime.date(y, m, 1) > datetime.date.today():
-            return
-        self.cal_year, self.cal_month = y, m
-        self.render_calendar()
-
-    def set_today(self, target_input):
-        dpg.set_value(target_input, datetime.date.today().strftime("%Y-%m-%d"))
-
-    def update_mode_fields(self):
-        mode = self.modes.get(dpg.get_value(self._t("mode")), "period")
-        show_map = {"period": [self._t("group_period")], "single": [self._t("group_single")], "season": [self._t("group_season")]}
-        for group in [self._t("group_period"), self._t("group_single"), self._t("group_season")]:
-            dpg.configure_item(group, show=False)
-        for group in show_map.get(mode, []):
-            dpg.configure_item(group, show=True)
-
-    def run_scraper(self, mode, start_date, end_date, save_dir, timeout, retry, season_year=None, headless=True):
-        self.stop_flag.clear()
-        scr = None
-        debug_log_path = os.path.join(save_dir, f"scrape_debug_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
-        try:
-            scr = Scrapper(wait=timeout, path=save_dir, headless=headless)
-            self.log(f"[디버그] 로그 파일: {debug_log_path}")
-
-            def fetch_and_save(url, prefix="", game_date=None):
-                if self.stop_flag.is_set():
-                    return False
-                filename = url.split("/")[-1] + ".json"
-                target_dir = os.path.join(save_dir, f"{game_date.year}") if game_date else save_dir
-                os.makedirs(target_dir, exist_ok=True)
-                target_path = os.path.join(target_dir, filename)
-                if os.path.exists(target_path):
-                    try:
-                        with open(target_path, "r", encoding="utf-8") as f:
-                            existing = json.load(f)
-                        if check_data.validate_game(existing).get("ok"):
-                            self.log(f"{prefix}  기존 데이터 검증 통과: {filename} (스킵)")
-                            return True
-                    except Exception:
-                        pass
-
-                max_attempts = max(1, int(retry))
-                ld = ind = rd = None
-                for attempt in range(1, max_attempts + 1):
-                    try:
-                        self.log(f"{prefix}    [{attempt}/{max_attempts}] 페이지 접속 및 데이터 수집 중...")
-                        ld, ind, rd = scr.get_game_data(url)
-                        if not (ld and ind and rd):
-                            raise ValueError("lineup/relay/record 중 일부가 비어 있습니다.")
-                        normalized_url = Scrapper.normalize_game_url(url)
-                        candidate_data = minimize_game_payload(
-                            {"lineup": ld, "relay": ind, "record": rd},
-                            game_id=Scrapper.extract_game_id(normalized_url),
-                            game_url=normalized_url,
-                            collected_at=datetime.datetime.now(datetime.UTC).isoformat(),
-                        )
-                        validation = check_data.validate_game(candidate_data)
-                        if validation.get("ok"):
-                            with open(target_path, "w", encoding="utf-8") as f:
-                                f.write(pretty_game_json(candidate_data))
-                            self.log(f"{prefix}  검증 통과 및 저장 완료: {filename}")
-                            return True
-                    except Exception as ex:
-                        self.debug_log(debug_log_path, f"{filename} | {type(ex).__name__}: {ex}\n{traceback.format_exc()}")
-                self.log(f"{prefix}  {max_attempts}회 이상 실패로 건너뜀: {filename}")
-                return False
-
-            def make_process_day(day_complete, prefix=""):
-                def _process(cur_date, urls):
-                    if self.stop_flag.is_set():
-                        return
-                    self.log(f"{prefix}{cur_date} 경기 정보 수집 시작...")
-                    if urls == -1:
-                        self.log(f"{prefix}{cur_date} KBO 일정이 없습니다.")
-                        day_complete()
-                        return
-                    if not urls:
-                        self.log(f"{prefix}{cur_date} 경기 없음/로딩 실패.")
-                        day_complete()
-                        return
-                    for url in urls:
-                        if self.stop_flag.is_set():
-                            break
-                        fetch_and_save(url, prefix, cur_date)
-                    if not self.stop_flag.is_set():
-                        day_complete()
-
-                return _process
-
-            if mode == "season" and season_year is not None:
-                monthly_active = []
-                total_days = 0
-                for month in range(1, 13):
-                    active_days = scr.get_activated_dates_for_month(season_year, month)
-                    filtered = [d for d in active_days if start_date <= datetime.date(season_year, month, d) <= end_date]
-                    total_days += len(filtered)
-                    monthly_active.append((month, filtered))
-                if total_days == 0:
-                    self.log("활성화된 일정이 없습니다.")
-                    self.msg_q.put(("progress", 1.0))
-                    return
-                done_days = 0
-
-                def day_complete():
-                    nonlocal done_days
-                    done_days += 1
-                    self.msg_q.put(("progress", done_days / total_days))
-
-                process_day = make_process_day(day_complete, prefix="[시즌] ")
-                for month, days in monthly_active:
-                    for day in days:
-                        if self.stop_flag.is_set():
-                            break
-                        cur = datetime.date(season_year, month, day)
-                        urls = scr.get_game_urls(season_year, month, day)
-                        process_day(cur, urls)
-            else:
-                active_entries = list(scr.iter_active_date_urls(start_date, end_date))
-                total_days = len(active_entries)
-                if total_days == 0:
-                    self.log("활성화된 일정이 없습니다.")
-                    self.msg_q.put(("progress", 1.0))
-                    return
-                done_days = 0
-
-                def day_complete():
-                    nonlocal done_days
-                    done_days += 1
-                    self.msg_q.put(("progress", done_days / total_days))
-
-                process_day = make_process_day(day_complete)
-                for cur, urls in active_entries:
-                    if self.stop_flag.is_set():
-                        break
-                    process_day(cur, urls)
-
-            self.log("[중지] 작업이 중지되었습니다." if self.stop_flag.is_set() else "[완료] 모든 작업이 완료되었습니다.")
-            if not self.stop_flag.is_set():
-                self.msg_q.put(("progress", 1.0))
-        except Exception as e:
-            self.log("[오류]\n" + "".join(traceback.format_exception(type(e), e, e.__traceback__)))
-            self.state.set_status("error", "데이터 수집 실패", "수집 중 예외가 발생했습니다.", debug_detail=traceback.format_exc(), source="데이터 수집")
-        finally:
-            if scr:
-                try:
-                    if hasattr(scr, "close"):
-                        scr.close()
-                    elif getattr(scr, "driver", None):
-                        scr.driver.quit()
-                except Exception:
-                    pass
-            self.msg_q.put(("done", None))
-
-    def start_scrape(self):
-        if self.worker and self.worker.is_alive():
-            self.log("이미 작업이 진행 중입니다.")
-            return
-
-        save_dir = dpg.get_value(self._t("save_dir"))
-        timeout = dpg.get_value(self._t("timeout"))
-        retry = dpg.get_value(self._t("retry"))
-        headless = dpg.get_value(self._t("headless"))
-        mode = self.modes.get(dpg.get_value(self._t("mode")), "period")
-        season_year = None
-
-        try:
-            if mode == "period":
-                sd = datetime.datetime.strptime(dpg.get_value(self._t("start_date")), "%Y-%m-%d").date()
-                ed = datetime.datetime.strptime(dpg.get_value(self._t("end_date")), "%Y-%m-%d").date()
-                if ed < sd:
-                    self.log("종료일은 시작일보다 이전일 수 없습니다.")
-                    self.state.set_status("warn", "입력값 확인", "종료일은 시작일보다 이전일 수 없습니다.", source="데이터 수집")
-                    return
-            elif mode == "single":
-                sd = ed = datetime.datetime.strptime(dpg.get_value(self._t("single_date")), "%Y-%m-%d").date()
-            else:
-                year = int(dpg.get_value(self._t("season_year")))
-                if year < 2020:
-                    self.log("시즌은 2020년부터 선택 가능합니다.")
-                    self.state.set_status("warn", "입력값 확인", "시즌은 2020년부터 선택 가능합니다.", source="데이터 수집")
-                    return
-                sd = datetime.date(year, 1, 1)
-                ed = datetime.date(year, 12, 31)
-                season_year = year
-        except ValueError:
-            self.log("날짜 형식이 올바르지 않습니다.")
-            self.state.set_status("warn", "입력값 확인", "날짜 형식이 올바르지 않습니다.", source="데이터 수집")
-            return
-
-        os.makedirs(save_dir, exist_ok=True)
-        for item in self.disable_items:
-            dpg.configure_item(item, enabled=False)
-        dpg.configure_item(self._t("btn_stop"), enabled=True)
-        dpg.configure_item(self._t("progress_bar"), overlay="진행 중...")
-
-        self.stop_flag.clear()
-        self.worker = threading.Thread(
-            target=self.run_scraper,
-            args=(mode, sd, ed, save_dir, timeout, retry, season_year, headless),
-            daemon=True
+        self.job_runner = job_runner or JobRunner()
+        self.request_layout = request_layout or (lambda: None)
+        self.namespace = TagNamespace("collection")
+        self.view_model = CollectionViewModel(save_dir="games")
+        self.service = CollectionService()
+        self.date_picker = DatePicker(self.namespace.child("date_picker"))
+        self.save_dir_selector = FileSelector(
+            self.namespace.child("save_dir"),
+            label="Save dir",
+            default_value=self.view_model.save_dir,
+            directory=True,
+            width=420,
         )
-        self.worker.start()
-        browser_mode = "headless" if headless else "headed"
-        self.state.set_status("info", "데이터 수집 시작", f"모드={mode}, 브라우저={browser_mode}, 저장 경로={save_dir}", source="데이터 수집")
+        self.progress_panel = ProgressPanel(self.namespace.child("progress"), default_message="Ready to collect")
+        self.log_panel = LogPanel(self.namespace.child("logs"), height=240, title="Collection job log")
+        self.summary_card = SummaryCard(self.namespace.child("summary"), title="Last run summary", default_text="No run yet")
+        self.current_job: JobHandle | None = None
+        self.last_failed_targets: list[CollectionTarget] = []
 
-    def stop_scrape(self):
-        self.stop_flag.set()
-        self.log("중지 요청됨. 현재 작업이 완료될 때까지 기다려주세요.")
-        self.state.set_status("warn", "데이터 수집 중지 요청", "현재 작업이 완료된 뒤 중지됩니다.", source="데이터 수집")
+    def _tag(self, name: str) -> str:
+        return self.namespace(name)
 
-    def open_save_dir_dialog(self):
-        dpg.configure_item(self._t("save_dir_dialog"), show=True)
-
-    def select_save_dir(self, sender, app_data):
-        selected_dir = app_data.get("file_path_name")
-        if selected_dir:
-            dpg.set_value(self._t("save_dir"), selected_dir)
-
-    def build(self, parent):
-        today = datetime.date.today().strftime("%Y-%m-%d")
-        with dpg.tab(label="데이터 수집", parent=parent):
-            dpg.add_text("KBO Naver Scrapper", bullet=True, color=(255, 0, 0), wrap=800)
+    def build(self, parent: str) -> None:
+        today = dt.date.today().strftime("%Y-%m-%d")
+        self.view_model.start_date = today
+        self.view_model.end_date = today
+        self.view_model.single_date = today
+        with dpg.tab(label=self.label, parent=parent, tag=self._tag("tab")):
+            dpg.add_text("Collect KBO game JSON from Naver and save validated files.")
             with dpg.group(horizontal=True):
-                dpg.add_text("수집 모드")
-                dpg.add_radio_button(items=list(self.modes.keys()), tag=self._t("mode"), default_value="기간", callback=lambda: self.update_mode_fields(), horizontal=True)
+                dpg.add_text("Mode")
+                dpg.add_radio_button(
+                    items=["Period", "Single Date", "Season"],
+                    tag=self._tag("mode"),
+                    default_value="Period",
+                    horizontal=True,
+                    callback=lambda: self._apply_mode_from_ui(),
+                )
 
-            with dpg.group(horizontal=True, tag=self._t("group_period")):
-                dpg.add_text("시작일")
-                dpg.add_input_text(tag=self._t("start_date"), width=120, readonly=True, default_value=today)
-                dpg.add_button(label="V", width=30, tag=self._t("btn_cal_start"), callback=lambda: self.open_calendar(self._t("start_date")))
-                dpg.add_button(label="오늘", width=50, tag=self._t("btn_today_start"), callback=lambda: self.set_today(self._t("start_date")))
-                dpg.add_text("종료일")
-                dpg.add_input_text(tag=self._t("end_date"), width=120, readonly=True, default_value=today)
-                dpg.add_button(label="V", width=30, tag=self._t("btn_cal_end"), callback=lambda: self.open_calendar(self._t("end_date")))
-                dpg.add_button(label="오늘", width=50, tag=self._t("btn_today_end"), callback=lambda: self.set_today(self._t("end_date")))
+            with dpg.group(horizontal=True, tag=self._tag("period_group")):
+                dpg.add_text("Start")
+                dpg.add_input_text(tag=self._tag("start_date"), width=120, readonly=True, default_value=today)
+                dpg.add_button(label="Pick", width=48, callback=lambda: self.date_picker.open(self._tag("start_date")))
+                dpg.add_button(label="Today", width=56, callback=lambda: dpg.set_value(self._tag("start_date"), today))
+                dpg.add_text("End")
+                dpg.add_input_text(tag=self._tag("end_date"), width=120, readonly=True, default_value=today)
+                dpg.add_button(label="Pick", width=48, callback=lambda: self.date_picker.open(self._tag("end_date")))
+                dpg.add_button(label="Today", width=56, callback=lambda: dpg.set_value(self._tag("end_date"), today))
 
-            with dpg.group(horizontal=True, tag=self._t("group_single")):
-                dpg.add_text("특정 날짜")
-                dpg.add_input_text(tag=self._t("single_date"), width=120, readonly=True, default_value=today)
-                dpg.add_button(label="V", width=30, tag=self._t("btn_cal_single"), callback=lambda: self.open_calendar(self._t("single_date")))
-                dpg.add_button(label="오늘", width=50, tag=self._t("btn_today_single"), callback=lambda: self.set_today(self._t("single_date")))
+            with dpg.group(horizontal=True, tag=self._tag("single_group"), show=False):
+                dpg.add_text("Date")
+                dpg.add_input_text(tag=self._tag("single_date"), width=120, readonly=True, default_value=today)
+                dpg.add_button(label="Pick", width=48, callback=lambda: self.date_picker.open(self._tag("single_date")))
+                dpg.add_button(label="Today", width=56, callback=lambda: dpg.set_value(self._tag("single_date"), today))
 
-            with dpg.group(horizontal=True, tag=self._t("group_season")):
-                dpg.add_text("시즌 (2020~)")
-                years = [str(y) for y in range(2020, datetime.date.today().year + 1)]
-                dpg.add_combo(tag=self._t("season_year"), width=120, items=years, default_value=years[-1])
+            with dpg.group(horizontal=True, tag=self._tag("season_group"), show=False):
+                dpg.add_text("Season year")
+                dpg.add_combo(
+                    tag=self._tag("season_year"),
+                    width=120,
+                    items=[str(year) for year in range(2020, dt.date.today().year + 1)],
+                    default_value=str(dt.date.today().year),
+                )
 
-            with dpg.group(horizontal=True):
-                dpg.add_text("저장 경로")
-                dpg.add_input_text(tag=self._t("save_dir"), width=400, default_value="games")
-                dpg.add_button(label="폴더 선택", width=80, tag=self._t("btn_save_dir"), callback=lambda: self.open_save_dir_dialog())
-
-            with dpg.group(horizontal=True):
-                dpg.add_text("타임아웃(초)")
-                dpg.add_input_int(tag=self._t("timeout"), width=80, default_value=8, min_value=2, max_value=60)
-                dpg.add_text("최대 실패 횟수")
-                dpg.add_input_int(tag=self._t("retry"), width=120, default_value=3, min_value=1, max_value=20)
-                dpg.add_checkbox(tag=self._t("headless"), label="Headless", default_value=True)
+            self.save_dir_selector.build()
 
             with dpg.group(horizontal=True):
-                dpg.add_button(tag=self._t("btn_start"), label="시작", width=120, callback=lambda: self.start_scrape())
-                dpg.add_button(tag=self._t("btn_stop"), label="중지", width=120, callback=lambda: self.stop_scrape(), enabled=False)
+                dpg.add_text("Timeout")
+                dpg.add_input_int(tag=self._tag("timeout"), width=80, default_value=8, min_value=2, max_value=60)
+                dpg.add_text("Retry")
+                dpg.add_input_int(tag=self._tag("retry"), width=80, default_value=3, min_value=1, max_value=20)
+                dpg.add_checkbox(tag=self._tag("headless"), label="Headless browser", default_value=True)
 
-            dpg.add_progress_bar(tag=self._t("progress_bar"), width=-1, default_value=0.0, overlay="대기 중")
-            dpg.add_text("로그")
-            with dpg.child_window(tag=self._t("log_window"), autosize_x=True, height=250):
-                dpg.add_input_text(tag=self._t("log"), multiline=True, readonly=True, width=-1, height=-1)
+            with dpg.group(horizontal=True):
+                dpg.add_button(tag=self._tag("start_button"), label="Start collection", width=140, callback=lambda: self.start_collection())
+                dpg.add_button(tag=self._tag("cancel_button"), label="Cancel", width=100, callback=lambda: self.cancel_collection(), enabled=False)
+                dpg.add_button(tag=self._tag("retry_failed_button"), label="Retry failed", width=120, callback=lambda: self.retry_failed_collection(), enabled=False)
 
-            with dpg.file_dialog(directory_selector=True, show=False, callback=self.select_save_dir, tag=self._t("save_dir_dialog"), width=640, height=480):
-                dpg.add_file_extension(".*")
+            self.progress_panel.build()
+            self.summary_card.build()
 
-            with dpg.window(tag=self._t("calendar_modal"), label="날짜 선택", modal=True, show=False, no_move=False, no_resize=True, width=360, height=340):
-                with dpg.group(horizontal=True):
-                    dpg.add_button(label="<", width=30, callback=lambda: self.calendar_prev())
-                    dpg.add_text("", tag=self._t("calendar_header"))
-                    dpg.add_button(label=">", width=30, callback=lambda: self.calendar_next())
-                dpg.add_separator()
-                with dpg.child_window(tag=self._t("calendar_grid"), autosize_x=True, autosize_y=True):
-                    pass
-                dpg.add_separator()
-                dpg.add_button(label="닫기", width=60, callback=lambda: dpg.configure_item(self._t("calendar_modal"), show=False))
+            dpg.add_spacer(height=8)
+            dpg.add_text("Daily result summary")
+            with dpg.table(
+                header_row=True,
+                tag=self._tag("result_table"),
+                policy=dpg.mvTable_SizingStretchProp,
+                row_background=True,
+                borders_innerH=True,
+                borders_outerH=True,
+                borders_innerV=True,
+                borders_outerV=True,
+                height=140,
+            ):
+                for label in ["Date", "Games", "Success", "Failed", "Skipped", "Failed files", "Validation"]:
+                    dpg.add_table_column(label=label)
 
-        self.disable_items = [
-            self._t("btn_start"), self._t("start_date"), self._t("end_date"), self._t("save_dir"),
-            self._t("timeout"), self._t("retry"), self._t("btn_cal_start"), self._t("btn_cal_end"),
-            self._t("btn_today_start"), self._t("btn_today_end"), self._t("single_date"),
-            self._t("btn_cal_single"), self._t("btn_today_single"), self._t("season_year"), self._t("mode"),
-            self._t("btn_save_dir"), self._t("headless"),
+            self.log_panel.build()
+        self.date_picker.build()
+
+    def _apply_mode_from_ui(self) -> None:
+        mode_value = dpg.get_value(self._tag("mode"))
+        mode_map = {"Period": "period", "Single Date": "single", "Season": "season"}
+        self.view_model.mode = mode_map.get(mode_value, "period")
+        dpg.configure_item(self._tag("period_group"), show=self.view_model.mode == "period")
+        dpg.configure_item(self._tag("single_group"), show=self.view_model.mode == "single")
+        dpg.configure_item(self._tag("season_group"), show=self.view_model.mode == "season")
+        self.request_layout()
+
+    def apply_responsive_layout(self, content_w: int, content_h: int) -> None:
+        available_w = max(720, int(content_w) - 36)
+        save_dir_w = max(220, min(520, available_w - 180))
+        log_h = max(120, int(content_h) - 460)
+        self.save_dir_selector.set_width(save_dir_w)
+        self.log_panel.set_height(log_h)
+
+    def _read_form(self) -> CollectionRequest:
+        mode = self.view_model.mode
+        if mode == "single":
+            start_date = end_date = dt.datetime.strptime(dpg.get_value(self._tag("single_date")), "%Y-%m-%d").date()
+            season_year = None
+        elif mode == "season":
+            season_year = int(dpg.get_value(self._tag("season_year")))
+            start_date = dt.date(season_year, 1, 1)
+            end_date = dt.date(season_year, 12, 31)
+        else:
+            start_date = dt.datetime.strptime(dpg.get_value(self._tag("start_date")), "%Y-%m-%d").date()
+            end_date = dt.datetime.strptime(dpg.get_value(self._tag("end_date")), "%Y-%m-%d").date()
+            season_year = None
+        if end_date < start_date:
+            raise ValueError("end date must be on or after start date")
+        save_dir = Path(self.save_dir_selector.get_value() or "games")
+        return CollectionRequest(
+            mode=mode,
+            save_dir=save_dir,
+            timeout_seconds=int(dpg.get_value(self._tag("timeout"))),
+            retry_count=int(dpg.get_value(self._tag("retry"))),
+            headless=bool(dpg.get_value(self._tag("headless"))),
+            start_date=start_date,
+            end_date=end_date,
+            season_year=season_year,
+        )
+
+    def start_collection(self) -> None:
+        if self.current_job and (snapshot := self.job_runner.get_snapshot(self.current_job.job_id)) and not snapshot.is_terminal:
+            self.state.set_status("warn", "Collection already running", "Wait for the current job to finish.", source=self.label)
+            return
+        try:
+            request = self._read_form()
+        except ValueError as exc:
+            self.state.set_status("warn", "Invalid collection input", str(exc), source=self.label)
+            return
+
+        self.log_panel.clear()
+        self._set_controls_enabled(running=True)
+        self.progress_panel.set_state(message="Starting collection...", progress=0.0, overlay="0%")
+        self.summary_card.set_text("Collection job is starting")
+        self.current_job = self.job_runner.start_job(
+            name="KBO collection",
+            source=self.label,
+            worker=lambda ctx: self.service.run(request, ctx),
+            listener=self._handle_job_event,
+        )
+        self.state.set_status(
+            "info",
+            "Collection started",
+            f"mode={request.mode} save_dir={request.save_dir}",
+            source=self.label,
+            append=False,
+        )
+
+    def retry_failed_collection(self) -> None:
+        if not self.last_failed_targets:
+            self.state.set_status("warn", "No failed games to retry", source=self.label)
+            return
+        request = self._read_form()
+        request = CollectionRequest(
+            **{**request.__dict__, "targets": list(self.last_failed_targets)},
+        )
+        self.log_panel.clear()
+        self._set_controls_enabled(running=True)
+        self.current_job = self.job_runner.start_job(
+            name="Retry failed collection",
+            source=self.label,
+            worker=lambda ctx: self.service.run(request, ctx),
+            listener=self._handle_job_event,
+        )
+        self.state.set_status("info", "Retrying failed games", f"targets={len(self.last_failed_targets)}", source=self.label, append=False)
+
+    def cancel_collection(self) -> None:
+        if self.current_job is None:
+            return
+        self.job_runner.cancel(self.current_job.job_id)
+        self.state.set_status("warn", "Collection cancellation requested", source=self.label)
+
+    def _handle_job_event(self, event: JobEvent, snapshot: JobSnapshot) -> None:
+        if event.kind == "log":
+            self.log_panel.append(event.payload)
+            channel = "error" if event.payload.level == "error" else "info"
+            self.state.set_status(channel, event.payload.message, source=self.label)
+            return
+        if event.kind == "progress":
+            progress = float(event.payload.get("progress", 0.0))
+            message = event.payload.get("message") or "Collection running"
+            self.progress_panel.set_state(message=message, progress=progress)
+            self.state.set_status("info", "Collection running", message, source=self.label)
+            return
+        if event.kind == "result":
+            metrics = event.payload.metrics
+            self.last_failed_targets = list(metrics.get("failed_target_items", []))
+            self.summary_card.set_text(
+                f"{event.payload.summary}\n"
+                f"{event.payload.detail or '-'}\n"
+                f"debug: {event.payload.artifacts.get('debug_log_path', '-')}"
+            )
+            self._render_day_logs(metrics.get("day_logs", []))
+            if dpg.does_item_exist(self._tag("retry_failed_button")):
+                dpg.configure_item(self._tag("retry_failed_button"), enabled=bool(self.last_failed_targets))
+            return
+        if event.kind == "completed":
+            self._set_controls_enabled(running=False)
+            self.progress_panel.set_state(message="Collection completed", progress=1.0, overlay="Done")
+            self.state.set_status("info", "Collection completed", snapshot.latest_message, source=self.label, append=False)
+            return
+        if event.kind == "cancelled":
+            self._set_controls_enabled(running=False)
+            self.progress_panel.set_state(message="Collection cancelled", progress=snapshot.progress, overlay="Cancelled")
+            self.state.set_status("warn", "Collection cancelled", source=self.label, append=False)
+            return
+        if event.kind == "failed":
+            self._set_controls_enabled(running=False)
+            self.progress_panel.set_state(message="Collection failed", progress=snapshot.progress, overlay="Failed")
+            self.summary_card.set_text(f"Collection failed\n{event.payload['message']}")
+            self.state.set_status(
+                "error",
+                "Collection failed",
+                event.payload["message"],
+                debug_detail=event.payload["traceback"],
+                source=self.label,
+                append=False,
+            )
+
+    def _render_day_logs(self, day_logs: list[object]) -> None:
+        table_tag = self._tag("result_table")
+        if not dpg.does_item_exist(table_tag):
+            return
+        dpg.delete_item(table_tag, children_only=True, slot=1)
+        for record in day_logs:
+            with dpg.table_row(parent=table_tag):
+                dpg.add_text(record.game_date)
+                dpg.add_text(str(record.game_count))
+                dpg.add_text(str(record.success_count), color=(120, 220, 140))
+                dpg.add_text(str(record.failure_count), color=(255, 110, 110))
+                dpg.add_text(str(record.skipped_count))
+                dpg.add_text(", ".join(record.failed_files[:3]) or "-")
+                dpg.add_text(" | ".join(record.validation_failures[:2]) or "-")
+
+    def _set_controls_enabled(self, *, running: bool) -> None:
+        disabled_tags = [
+            self._tag("mode"),
+            self._tag("start_date"),
+            self._tag("end_date"),
+            self._tag("single_date"),
+            self._tag("season_year"),
+            self._tag("timeout"),
+            self._tag("retry"),
+            self._tag("headless"),
+            self._tag("start_button"),
         ]
-        self.update_mode_fields()
-        self.render_calendar()
+        for tag in disabled_tags:
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=not running)
+        if dpg.does_item_exist(self._tag("cancel_button")):
+            dpg.configure_item(self._tag("cancel_button"), enabled=running)

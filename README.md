@@ -48,3 +48,4 @@ python migrate_game_json.py games --output-dir migrated_games
 - Editor usage: [`docs/json_correction_editor.md`](docs/json_correction_editor.md)
 - Minimal schema + field analysis + migration notes: [`docs/minimal_game_json_schema.md`](docs/minimal_game_json_schema.md)
 - PostgreSQL loading flow: [`docs/postgres_backfill.md`](docs/postgres_backfill.md)
+- GUI architecture + refactoring guide: [`docs/gui_architecture.md`](docs/gui_architecture.md)
