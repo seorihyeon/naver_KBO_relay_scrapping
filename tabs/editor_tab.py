@@ -161,6 +161,8 @@ class CorrectionEditorTab:
         self.selected_finding_index: int | None = None
         self.selected_game_info_key: str | None = None
         self.auto_preview: dict[str, Any] | None = None
+        self.split_preview: dict[str, Any] | None = None
+        self._split_entry_options: list[dict[str, Any]] = []
         self._last_validation_signatures: set[str] = set()
 
     def _t(self, name: str) -> str:
@@ -437,9 +439,12 @@ class CorrectionEditorTab:
             kwargs["callback"] = callback
         dpg.add_combo(**kwargs)
 
-    def _add_labeled_checkbox(self, tag: str, label: str, *, default_value: bool = False) -> None:
+    def _add_labeled_checkbox(self, tag: str, label: str, *, default_value: bool = False, callback: Any = None) -> None:
         dpg.add_text(label)
-        dpg.add_checkbox(tag=tag, label="", default_value=default_value)
+        kwargs: dict[str, Any] = {"tag": tag, "label": "", "default_value": default_value}
+        if callback is not None:
+            kwargs["callback"] = callback
+        dpg.add_checkbox(**kwargs)
 
     def _add_runner_move_editor(self, prefix: str, *, count: int = 3, title_prefix: str = "runner") -> None:
         for index in range(1, count + 1):
@@ -572,6 +577,111 @@ class CorrectionEditorTab:
             return None
         result_type = self._mapped_choice_value(dpg.get_value(tag), reverse_map=RESULT_TYPE_LABELS_REVERSE, default="other")
         return result_type or None
+
+    def _selected_split_entry(self) -> dict[str, Any] | None:
+        tag = self._t("split_basic_batter")
+        if not dpg.does_item_exist(tag):
+            return None
+        selected_label = str(dpg.get_value(tag) or "").strip()
+        for option in self._split_entry_options:
+            if option.get("label") == selected_label:
+                return option
+        return None
+
+    def _recommended_split_entry(self, current_batter_id: str | None) -> dict[str, Any] | None:
+        if not self._split_entry_options:
+            return None
+        event_batter_id = self._event_batter_id(self._get_selected_event())
+        if event_batter_id and event_batter_id != current_batter_id:
+            for option in self._split_entry_options:
+                if option.get("player_id") == event_batter_id:
+                    return option
+        next_batter_id, _next_name = self._adjacent_batter(current_batter_id, side=self._selected_offense_side(), offset=1)
+        if next_batter_id:
+            for option in self._split_entry_options:
+                if option.get("player_id") == next_batter_id:
+                    return option
+        for option in self._split_entry_options:
+            if option.get("player_id") != current_batter_id:
+                return option
+        return self._split_entry_options[0]
+
+    def refresh_basic_split_card(self, *, preview: bool = True) -> None:
+        self.split_preview = None
+        if not dpg.does_item_exist(self._t("split_basic_summary_text")):
+            return
+        if not self.session or self.selected_event_ref is None or self.selected_block_ref is None:
+            self._split_entry_options = []
+            if dpg.does_item_exist(self._t("split_basic_batter")):
+                dpg.configure_item(self._t("split_basic_batter"), items=[])
+                dpg.set_value(self._t("split_basic_batter"), "")
+            self._set_value_if_exists(self._t("split_basic_summary_text"), "선택한 이벤트가 없어서 타석 분리 대상을 계산할 수 없습니다.")
+            self._set_value_if_exists(self._t("split_basic_status_text"), "중앙 이벤트 목록에서 새 타석이 시작되어야 하는 이벤트를 먼저 선택해 주세요.")
+            self._set_value_if_exists(self._t("split_basic_preview_text"), "")
+            return
+
+        group_index, block_index, event_index = self.selected_event_ref
+        block = self._get_selected_block() or {}
+        selected_event = self._get_selected_event() or {}
+        current_pa = self._selected_pa_summary()
+        current_batter_id = current_pa.batter_id if current_pa else self._event_batter_id(selected_event)
+        current_batter_name = current_pa.batter_name if current_pa else self._player_name_lookup(current_batter_id)
+
+        self._split_entry_options = self.session.get_offense_entry_options(group_index=group_index, block_index=block_index)
+        split_labels = [str(option.get("label") or "") for option in self._split_entry_options]
+        if dpg.does_item_exist(self._t("split_basic_batter")):
+            dpg.configure_item(self._t("split_basic_batter"), items=split_labels)
+        current_entry = self._selected_split_entry()
+        if current_entry is None:
+            current_entry = self._recommended_split_entry(current_batter_id)
+            self._set_value_if_exists(self._t("split_basic_batter"), str((current_entry or {}).get("label") or ""))
+        selected_entry = self._selected_split_entry()
+
+        summary_lines = [
+            f"현재 블록: {self._block_label(block)} / 선택 이벤트 [{event_index}] {selected_event.get('text') or '(문구 없음)'}",
+            f"현재 추정 타석: {current_batter_name or current_batter_id or '-'}"
+            + (f" (이벤트 {current_pa.start_index}-{current_pa.end_index})" if current_pa else " (자동 인식 불가)"),
+            f"새 타석 시작 위치: 선택 이벤트부터 새 블록",
+        ]
+        if selected_entry:
+            summary_lines.append(f"새 타자 후보: {selected_entry.get('label')}")
+        else:
+            summary_lines.append("새 타자 후보: 공격 팀 엔트리에서 선택 필요")
+        self._set_value_if_exists(self._t("split_basic_summary_text"), "\n".join(summary_lines))
+
+        if not preview or selected_entry is None:
+            self._set_value_if_exists(self._t("split_basic_status_text"), "공격 팀 엔트리에서 새 타자를 선택하면 분리 가능 여부를 확인합니다.")
+            self._set_value_if_exists(self._t("split_basic_preview_text"), "")
+            return
+
+        preview_result = self.session.preview_split_plate_appearance_from_event(
+            group_index=group_index,
+            block_index=block_index,
+            selected_index=event_index,
+            new_batter_id=str(selected_entry.get("player_id") or ""),
+            new_batter_name=str(selected_entry.get("name") or "") or None,
+            auto_insert_intro=bool(dpg.get_value(self._t("split_basic_auto_intro"))) if dpg.does_item_exist(self._t("split_basic_auto_intro")) else True,
+        )
+        self.split_preview = preview_result
+        self._set_value_if_exists(self._t("split_basic_status_text"), str(preview_result.get("message") or "-"))
+        preview_lines = [
+            f"새 타자: {selected_entry.get('label')}",
+            f"이전 종료 이벤트: {'있음' if preview_result.get('prior_terminal_index') is not None else '없음'}",
+            f"새 블록 생성: {'예' if preview_result.get('new_block_created') else '아니오'}",
+            f"intro 자동 삽입: {'예' if preview_result.get('intro_inserted') else '아니오'}",
+        ]
+        if preview_result.get("ok"):
+            preview_lines.extend(
+                [
+                    f"새 블록 제목: {preview_result.get('new_block_title') or '-'}",
+                    f"분리 대상 범위: [{event_index}] ~ [{preview_result.get('segment_end')}]",
+                    f"예상 변경 이벤트 수: {preview_result.get('changed_event_count', 0)}",
+                    f"재계산 변경 예정 이벤트 수: {preview_result.get('rebuild_delta_count', 0)}",
+                ]
+            )
+        else:
+            preview_lines.append("안내: 기본 모드에서 분리할 수 없는 경우 고급 모드의 상세 분리를 사용해 주세요.")
+        self._set_value_if_exists(self._t("split_basic_preview_text"), "\n".join(preview_lines))
 
     def _candidate_insert_index(self, insert_mode: str) -> int:
         block = self._get_selected_block() or {}
@@ -842,6 +952,7 @@ class CorrectionEditorTab:
         merge_batter_name = pa_summary.batter_name if pa_summary and pa_summary.batter_name else batter_name
         self._set_value_if_exists(self._t("merge_batter_id"), merge_batter_id or "")
         self._set_value_if_exists(self._t("merge_batter_name"), merge_batter_name or "")
+        self.refresh_basic_split_card()
 
     def refresh_context_summary(self) -> None:
         block = self._get_selected_block() or {}
@@ -1008,6 +1119,7 @@ class CorrectionEditorTab:
                 )
             )
 
+        tags.extend(self._t(name) for name in ("split_basic_batter", "split_basic_summary_text", "split_basic_preview_text"))
         tags.extend(self._t(name) for name in ("split_first_result_type", "split_second_result_type", "merge_batter_id", "merge_batter_name"))
         tags.extend(self._t(f"split_{field}") for field in ("first_batter_id", "first_batter_name", "first_detail", "first_text", "second_batter_id", "second_batter_name", "second_detail", "second_text"))
         for prefix in ("split_first", "split_second"):
@@ -1071,6 +1183,7 @@ class CorrectionEditorTab:
 
     def refresh_all_views(self) -> None:
         self.auto_preview = None
+        self.split_preview = None
         self._refresh_validation_snapshot()
         self.refresh_header()
         self.refresh_game_info_table()
@@ -1897,7 +2010,47 @@ class CorrectionEditorTab:
             self.selected_event_ref = (group_index, block_index, changed[0])
         self.refresh_all_views()
 
-    def split_selected_plate_appearance(self) -> None:
+    def preview_split_from_selected_event(self) -> None:
+        self.refresh_basic_split_card(preview=True)
+        if self.split_preview:
+            self.state.set_status(
+                "info" if self.split_preview.get("ok") else "warn",
+                "타석 분리 미리보기",
+                str(self.split_preview.get("message") or "-"),
+                source="수정/보정",
+            )
+
+    def split_selected_plate_appearance_basic(self) -> None:
+        session = self._session_required()
+        if session is None or self.selected_event_ref is None:
+            return
+        selected_entry = self._selected_split_entry()
+        if selected_entry is None:
+            self.state.set_status("warn", "타석 분리 불가", "공격 팀 엔트리에서 새 타자를 먼저 선택해 주세요.", source="수정/보정")
+            return
+        group_index, block_index, event_index = self.selected_event_ref
+        result = session.split_plate_appearance_from_event(
+            group_index=group_index,
+            block_index=block_index,
+            selected_index=event_index,
+            new_batter_id=str(selected_entry.get("player_id") or ""),
+            new_batter_name=str(selected_entry.get("name") or "") or None,
+            auto_insert_intro=bool(dpg.get_value(self._t("split_basic_auto_intro"))) if dpg.does_item_exist(self._t("split_basic_auto_intro")) else True,
+        )
+        if not result.get("ok"):
+            self.split_preview = result
+            self.refresh_basic_split_card(preview=True)
+            self.state.set_status("warn", "타석 분리 불가", str(result.get("message") or "-"), source="수정/보정")
+            return
+        target_block_index = int(result.get("target_block_index") or block_index)
+        start_index = int(result.get("target_start_index") or result.get("start_index") or 0)
+        self.selected_block_ref = (group_index, target_block_index)
+        self.selected_event_ref = (group_index, target_block_index, start_index)
+        self.refresh_all_views()
+        self._set_active_action("split_merge")
+        self.state.set_status("info", "타석 분리 완료", str(result.get("message") or "선택 이벤트부터 새 타석으로 분리했습니다."), source="수정/보정")
+
+    def split_selected_plate_appearance_advanced(self) -> None:
         session = self._session_required()
         if session is None or self.selected_event_ref is None:
             return
@@ -1935,11 +2088,13 @@ class CorrectionEditorTab:
             group_index=group_index,
             block_index=block_index,
             selected_index=event_index,
-            merged_batter_id=self._input_text_value(self._t("merge_batter_id")),
-            merged_batter_name=self._input_text_value(self._t("merge_batter_name")),
+            merged_batter_id=self._input_text_value(self._t("merge_batter_id")) if dpg.does_item_exist(self._t("merge_batter_id")) else None,
+            merged_batter_name=self._input_text_value(self._t("merge_batter_name")) if dpg.does_item_exist(self._t("merge_batter_name")) else None,
         )
         if next_index is not None:
-            self.selected_event_ref = (group_index, block_index, next_index)
+            next_block_index, next_event_index = next_index
+            self.selected_block_ref = (group_index, next_block_index)
+            self.selected_event_ref = (group_index, next_block_index, next_event_index)
         self.refresh_all_views()
 
     def run_validation(self) -> None:
@@ -2447,6 +2602,31 @@ class CorrectionEditorTab:
                             for field in PLAYER_CHANGE_PLAYER_FIELDS:
                                 self._add_labeled_input_text(self._t(f"{side}_{field}"), f"{side}.{field}")
                         dpg.add_button(label="이벤트 적용", callback=lambda: self.apply_event_editor())
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_pa_split_merge_advanced"), label="Plate Appearance Split/Merge", default_open=False, parent=self._t("advanced_mode_panel")):
+                        dpg.add_text("Advanced Split")
+                        for field in ("first_batter_id", "first_batter_name", "first_detail", "first_text", "second_batter_id", "second_batter_name", "second_detail", "second_text"):
+                            self._add_labeled_input_text(self._t(f"split_{field}"), field)
+                        self._add_labeled_combo(
+                            self._t("split_first_result_type"),
+                            "first_result_type",
+                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                            default_value=RESULT_TYPE_LABELS["strikeout"],
+                        )
+                        self._add_labeled_combo(
+                            self._t("split_second_result_type"),
+                            "second_result_type",
+                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                            default_value=RESULT_TYPE_LABELS["double"],
+                        )
+                        self._add_runner_move_editor("split_first", count=3, title_prefix="split_first runner")
+                        self._add_runner_move_editor("split_second", count=3, title_prefix="split_second runner")
+                        dpg.add_button(label="고급 타석 분리 적용", callback=lambda: self.split_selected_plate_appearance_advanced())
+                        dpg.add_separator()
+                        dpg.add_text("Merge")
+                        self._add_labeled_input_text(self._t("merge_batter_id"), "merged_batter_id")
+                        self._add_labeled_input_text(self._t("merge_batter_name"), "merged_batter_name")
+                        dpg.add_button(label="이전 타석과 병합", callback=lambda: self.merge_selected_plate_appearance())
                     dpg.add_separator(parent=self._t("basic_mode_panel"))
                     with dpg.collapsing_header(tag=self._t("section_structured_add"), label="이벤트 추가", default_open=True, parent=self._t("basic_mode_panel")):
                         self._add_labeled_combo(
@@ -2532,28 +2712,30 @@ class CorrectionEditorTab:
                         dpg.add_button(label="결과 의미 수정", callback=lambda: self.apply_meaning_edit())
                     dpg.add_separator(parent=self._t("basic_mode_panel"))
                     with dpg.collapsing_header(tag=self._t("section_pa_split_merge"), label="타석 분리 / 병합", default_open=False, parent=self._t("basic_mode_panel")):
-                        dpg.add_text("Split")
-                        for field in ("first_batter_id", "first_batter_name", "first_detail", "first_text", "second_batter_id", "second_batter_name", "second_detail", "second_text"):
-                            self._add_labeled_input_text(self._t(f"split_{field}"), field)
+                        dpg.add_text("타석 분리")
+                        dpg.add_input_text(tag=self._t("split_basic_summary_text"), multiline=True, readonly=True, width=-1, height=95)
                         self._add_labeled_combo(
-                            self._t("split_first_result_type"),
-                            "첫 타석 결과",
-                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
-                            default_value=RESULT_TYPE_LABELS["strikeout"],
+                            self._t("split_basic_batter"),
+                            "새 타자 선택",
+                            items=[],
+                            default_value="",
+                            callback=lambda: self.refresh_basic_split_card(preview=True),
                         )
-                        self._add_labeled_combo(
-                            self._t("split_second_result_type"),
-                            "두 번째 타석 결과",
-                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
-                            default_value=RESULT_TYPE_LABELS["double"],
+                        self._add_labeled_checkbox(
+                            self._t("split_basic_auto_intro"),
+                            "새 타석 intro 이벤트 자동 삽입",
+                            default_value=True,
+                            callback=lambda: self.refresh_basic_split_card(preview=True),
                         )
-                        self._add_runner_move_editor("split_first", count=3, title_prefix="split_first runner")
-                        self._add_runner_move_editor("split_second", count=3, title_prefix="split_second runner")
-                        dpg.add_button(label="타석 분리", callback=lambda: self.split_selected_plate_appearance())
+                        dpg.add_text("이전 타석 종료 이벤트가 앞쪽에 없으면 기본 모드 분리는 차단됩니다.", wrap=0)
+                        dpg.add_text("-", tag=self._t("split_basic_status_text"), wrap=0)
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="분리 미리보기", callback=lambda: self.preview_split_from_selected_event())
+                            dpg.add_button(label="선택 이벤트부터 분리", callback=lambda: self.split_selected_plate_appearance_basic())
+                        dpg.add_input_text(tag=self._t("split_basic_preview_text"), multiline=True, readonly=True, width=-1, height=120)
                         dpg.add_separator()
-                        dpg.add_text("Merge")
-                        self._add_labeled_input_text(self._t("merge_batter_id"), "merged_batter_id")
-                        self._add_labeled_input_text(self._t("merge_batter_name"), "merged_batter_name")
+                        dpg.add_text("타석 병합")
+                        dpg.add_text("현재 선택 타석을 이전 타석과 병합합니다. 세부 타자 지정은 고급 모드에서만 제공합니다.", wrap=0)
                         dpg.add_button(label="이전 타석과 병합", callback=lambda: self.merge_selected_plate_appearance())
                     dpg.add_separator(parent=self._t("basic_mode_panel"))
                     with dpg.group(tag=self._t("basic_preview_panel"), parent=self._t("basic_mode_panel")):

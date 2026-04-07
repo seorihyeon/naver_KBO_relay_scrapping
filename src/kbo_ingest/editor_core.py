@@ -12,10 +12,13 @@ from typing import Any, Callable
 import check_data
 
 from .correction_engine import (
+    build_offense_entry_options as engine_build_offense_entry_options,
     insert_event_template as engine_insert_event_template,
     insert_missing_plate_appearance as engine_insert_missing_plate_appearance,
     merge_with_previous_plate_appearance as engine_merge_with_previous_plate_appearance,
+    preview_split_plate_appearance_from_event as engine_preview_split_plate_appearance_from_event,
     rebuild_payload,
+    split_plate_appearance_from_event as engine_split_plate_appearance_from_event,
     split_plate_appearance as engine_split_plate_appearance,
     summarize_plate_appearances,
     update_event_meaning as engine_update_event_meaning,
@@ -128,6 +131,17 @@ def _normalize_int(value: Any) -> int | None:
 
 def _current_state_value(event: JsonDict, key: str) -> Any:
     return (event.get("currentGameState") or {}).get(key)
+
+
+def _allowed_state_jump_delta(key: str, event: JsonDict) -> int:
+    if key != "out":
+        return 1
+    text = str(event.get("text") or "")
+    if "삼중살" in text:
+        return 3
+    if "병살" in text:
+        return 2
+    return 1
 
 
 def _iter_block_refs(payload: JsonDict):
@@ -583,6 +597,72 @@ class GameEditorSession:
         self.apply_change("update_event_meaning", mutator)
         return changed
 
+    def get_offense_entry_options(self, *, group_index: int, block_index: int) -> list[JsonDict]:
+        return engine_build_offense_entry_options(self.payload, group_index=group_index, block_index=block_index)
+
+    def preview_split_plate_appearance_from_event(
+        self,
+        *,
+        group_index: int,
+        block_index: int,
+        selected_index: int,
+        new_batter_id: str | None,
+        new_batter_name: str | None = None,
+        auto_insert_intro: bool = True,
+    ) -> dict[str, Any]:
+        return engine_preview_split_plate_appearance_from_event(
+            self.payload,
+            group_index=group_index,
+            block_index=block_index,
+            selected_index=selected_index,
+            new_batter_id=new_batter_id,
+            new_batter_name=new_batter_name,
+            auto_insert_intro=auto_insert_intro,
+        )
+
+    def split_plate_appearance_from_event(
+        self,
+        *,
+        group_index: int,
+        block_index: int,
+        selected_index: int,
+        new_batter_id: str | None,
+        new_batter_name: str | None = None,
+        auto_insert_intro: bool = True,
+    ) -> dict[str, Any]:
+        preview = engine_preview_split_plate_appearance_from_event(
+            self.payload,
+            group_index=group_index,
+            block_index=block_index,
+            selected_index=selected_index,
+            new_batter_id=new_batter_id,
+            new_batter_name=new_batter_name,
+            auto_insert_intro=auto_insert_intro,
+        )
+        if not preview.get("ok"):
+            return preview
+
+        result: dict[str, Any] = {}
+
+        def mutator(payload: JsonDict) -> None:
+            result.update(
+                engine_split_plate_appearance_from_event(
+                    payload,
+                    group_index=group_index,
+                    block_index=block_index,
+                    selected_index=selected_index,
+                    new_batter_id=str(preview.get("new_batter_id") or new_batter_id or ""),
+                    new_batter_name=preview.get("new_batter_name") or new_batter_name,
+                    auto_insert_intro=auto_insert_intro,
+                )
+            )
+            rebuilt, _report = rebuild_payload(payload)
+            payload.clear()
+            payload.update(rebuilt)
+
+        self.apply_change("split_plate_appearance_from_event", mutator)
+        return result or preview
+
     def split_plate_appearance(
         self,
         *,
@@ -616,8 +696,8 @@ class GameEditorSession:
         selected_index: int,
         merged_batter_id: str | None = None,
         merged_batter_name: str | None = None,
-    ) -> int | None:
-        next_index: list[int | None] = [None]
+    ) -> tuple[int, int] | None:
+        next_index: list[tuple[int, int] | None] = [None]
 
         def mutator(payload: JsonDict) -> None:
             next_index[0] = engine_merge_with_previous_plate_appearance(
@@ -703,7 +783,8 @@ class GameEditorSession:
                         current_value = _normalize_int(_current_state_value(event, key))
                         if prev_value is None or current_value is None:
                             continue
-                        if current_value - prev_value > 1:
+                        allowed_delta = _allowed_state_jump_delta(key, event)
+                        if current_value - prev_value > allowed_delta:
                             findings.append(
                                 {
                                     "severity": "warning",

@@ -315,6 +315,55 @@ def _intro_text(player_index: dict[str, PlayerInfo], batter_id: str, batter_name
     return f"\ud0c0\uc790 {name}"
 
 
+def build_offense_entry_options(payload: JsonDict, *, group_index: int, block_index: int) -> list[JsonDict]:
+    relay = payload.get("relay") or []
+    if not (0 <= group_index < len(relay) and 0 <= block_index < len(relay[group_index])):
+        return []
+    block = relay[group_index][block_index]
+    side = _offense_side(block.get("homeOrAway"))
+    lineup = payload.get("lineup") or {}
+    options: list[JsonDict] = []
+    seen: set[str] = set()
+
+    def append_rows(rows: list[JsonDict], *, source: str) -> None:
+        ordered_rows: list[tuple[tuple[int, str], JsonDict]] = []
+        for row in rows:
+            player_id = _normalize_player_id(row.get("playerCode") or row.get("playerId") or row.get("pcode"))
+            if not player_id or player_id in seen:
+                continue
+            name = str(row.get("playerName") or row.get("name") or player_id).strip() or player_id
+            bat_order = to_int(row.get("batorder") or row.get("batOrder"), None)
+            sort_order = bat_order if bat_order is not None else 999
+            ordered_rows.append(((sort_order, name), row))
+        for _sort_key, row in sorted(ordered_rows, key=lambda item: item[0]):
+            player_id = _normalize_player_id(row.get("playerCode") or row.get("playerId") or row.get("pcode"))
+            if not player_id or player_id in seen:
+                continue
+            seen.add(player_id)
+            name = str(row.get("playerName") or row.get("name") or player_id).strip() or player_id
+            bat_order = to_int(row.get("batorder") or row.get("batOrder"), None)
+            if source == "starter" and bat_order is not None:
+                label = f"{bat_order}\ubc88 {name} ({player_id})"
+            elif source == "candidate":
+                label = f"\ud6c4\ubcf4 {name} ({player_id})"
+            else:
+                label = f"\uc120\ubc1c {name} ({player_id})"
+            options.append(
+                {
+                    "label": label,
+                    "player_id": player_id,
+                    "name": name,
+                    "batorder": bat_order,
+                    "source": source,
+                    "side": side,
+                }
+            )
+
+    append_rows(lineup.get(f"{side}_starter") or [], source="starter")
+    append_rows(lineup.get(f"{side}_candidate") or [], source="candidate")
+    return options
+
+
 def _result_label(result_type: str, detail: str | None = None) -> str:
     detail_text = str(detail or "").strip()
     if detail_text:
@@ -1203,6 +1252,39 @@ def _block_events(payload: JsonDict, group_index: int, block_index: int) -> list
     return ((payload.get("relay") or [])[group_index][block_index].setdefault("textOptions", []))
 
 
+def _split_block_title(player_index: dict[str, PlayerInfo], batter_id: str | None, batter_name: str | None = None) -> str:
+    if batter_id:
+        return _intro_text(player_index, batter_id, batter_name)
+    return "\ubd84\ub9ac\ub41c \ud0c0\uc11d"
+
+
+def _extract_tracks_for_events(block: JsonDict, events: list[JsonDict]) -> list[JsonDict]:
+    moved_pitch_ids = {
+        str(event.get("ptsPitchId") or "").strip()
+        for event in events
+        if str(event.get("ptsPitchId") or "").strip()
+    }
+    tracks = list(block.get("ptsOptions") or [])
+    if not moved_pitch_ids or not tracks:
+        return []
+    moved_tracks: list[JsonDict] = []
+    remained_tracks: list[JsonDict] = []
+    for track in tracks:
+        pitch_id = str(track.get("pitchId") or "").strip()
+        if pitch_id and pitch_id in moved_pitch_ids:
+            moved_tracks.append(track)
+        else:
+            remained_tracks.append(track)
+    block["ptsOptions"] = remained_tracks
+    return moved_tracks
+
+
+def _renumber_block_numbers(relay_group: list[JsonDict]) -> None:
+    for index, block in enumerate(relay_group):
+        if isinstance(block, dict):
+            block["no"] = index
+
+
 def insert_event_template(
     payload: JsonDict,
     *,
@@ -1386,7 +1468,33 @@ def _find_pa_bounds_in_block(events: list[JsonDict], selected_index: int) -> tup
     return selected_index, selected_index
 
 
-def _assign_batter_to_segment(events: list[JsonDict], start: int, end: int, batter_id: str | None, batter_name: str | None, player_index: dict[str, PlayerInfo]) -> None:
+def _rewrite_batter_text(event: JsonDict, batter_id: str | None, batter_name: str | None, player_index: dict[str, PlayerInfo]) -> None:
+    if not batter_id:
+        return
+    category = _event_category(event)
+    if category == "intro":
+        event["text"] = _intro_text(player_index, batter_id, batter_name)
+        return
+    if category not in {"pitch", "bat_result"}:
+        return
+    label = _player_name(player_index, batter_id, batter_name)
+    if not label:
+        return
+    text = _event_text(event).strip()
+    detail = text.split(":", 1)[1].strip() if ":" in text else text
+    event["text"] = f"{label} : {detail}" if detail else label
+
+
+def _assign_batter_to_segment(
+    events: list[JsonDict],
+    start: int,
+    end: int,
+    batter_id: str | None,
+    batter_name: str | None,
+    player_index: dict[str, PlayerInfo],
+    *,
+    rewrite_text: bool = False,
+) -> None:
     if not batter_id:
         return
     for index in range(start, end + 1):
@@ -1395,8 +1503,279 @@ def _assign_batter_to_segment(events: list[JsonDict], start: int, end: int, batt
         event.setdefault("currentGameState", {})["batter"] = batter_id
         if category in {"pitch", "bat_result"}:
             event["batterRecord"] = {"pcode": batter_id}
-        if category == "intro":
+        if rewrite_text:
+            _rewrite_batter_text(event, batter_id, batter_name, player_index)
+        elif category == "intro":
             event["text"] = _intro_text(player_index, batter_id, batter_name)
+
+
+def _find_plate_appearance_for_event(payload: JsonDict, *, group_index: int, block_index: int, event_index: int) -> PlateAppearanceSummary | None:
+    for pa in summarize_plate_appearances(payload, group_index=group_index, block_index=block_index):
+        if pa.start_index <= event_index <= pa.end_index:
+            return pa
+    return None
+
+
+def _last_terminal_before(events: list[JsonDict], index: int, *, start: int = 0) -> int | None:
+    for candidate in range(index - 1, start - 1, -1):
+        if _is_terminal_event(events[candidate]):
+            return candidate
+    return None
+
+
+def _last_batter_before(events: list[JsonDict], index: int, *, start: int = 0) -> str | None:
+    for candidate in range(index - 1, start - 1, -1):
+        batter_id = _event_batter_id(events[candidate])
+        if batter_id:
+            return batter_id
+    return None
+
+
+def _first_terminal_from(events: list[JsonDict], index: int) -> int | None:
+    for candidate in range(index, len(events)):
+        if _is_terminal_event(events[candidate]):
+            return candidate
+    return None
+
+
+def _simple_split_analysis(
+    payload: JsonDict,
+    *,
+    group_index: int,
+    block_index: int,
+    selected_index: int,
+    new_batter_id: str | None,
+    new_batter_name: str | None = None,
+    auto_insert_intro: bool = True,
+) -> dict[str, Any]:
+    events = _block_events(payload, group_index, block_index)
+    result: dict[str, Any] = {
+        "ok": False,
+        "code": "",
+        "message": "",
+        "group_index": group_index,
+        "block_index": block_index,
+        "target_block_index": block_index + 1,
+        "selected_index": selected_index,
+        "new_batter_id": _normalize_player_id(new_batter_id),
+        "new_batter_name": str(new_batter_name or "").strip() or None,
+        "auto_insert_intro": bool(auto_insert_intro),
+        "start_index": None,
+        "changed_event_count": 0,
+        "rebuild_delta_count": None,
+    }
+    if not (0 <= selected_index < len(events)):
+        result.update(code="selected_index_out_of_range", message="\uc120\ud0dd\ud55c \uc774\ubca4\ud2b8 \uc704\uce58\uac00 \uc720\ud6a8\ud558\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.")
+        return result
+
+    player_index = build_player_index(payload)
+    offense_options = build_offense_entry_options(payload, group_index=group_index, block_index=block_index)
+    valid_batters = {option["player_id"] for option in offense_options}
+    current_pa = _find_plate_appearance_for_event(payload, group_index=group_index, block_index=block_index, event_index=selected_index)
+    current_batter_id = current_pa.batter_id if current_pa else _event_batter_id(events[selected_index])
+    if not current_batter_id:
+        prior_terminal_index = _last_terminal_before(events, selected_index)
+        if prior_terminal_index is not None:
+            current_batter_id = _event_batter_id(events[prior_terminal_index])
+    current_batter_name = _player_name(player_index, current_batter_id)
+    normalized_new_batter = _normalize_player_id(new_batter_id)
+    normalized_new_name = str(new_batter_name or "").strip() or _player_name(player_index, normalized_new_batter)
+    prior_batter_id = _last_batter_before(events, selected_index)
+    prior_batter_name = _player_name(player_index, prior_batter_id)
+    selected_event = events[selected_index]
+    selected_is_intro = _is_batter_intro_text(_event_text(selected_event))
+    selected_is_current_pa_start = bool(current_pa is not None and selected_index == current_pa.start_index)
+    result.update(
+        {
+            "current_pa_start": current_pa.start_index if current_pa else None,
+            "current_pa_end": current_pa.end_index if current_pa else None,
+            "current_batter_id": current_batter_id,
+            "current_batter_name": current_batter_name or None,
+            "prior_batter_id": prior_batter_id,
+            "prior_batter_name": prior_batter_name or None,
+            "selected_is_current_pa_start": selected_is_current_pa_start,
+            "selected_is_intro": selected_is_intro,
+            "offense_entry_options": offense_options,
+        }
+    )
+
+    if not normalized_new_batter:
+        result.update(code="missing_new_batter", message="\uc0c8 \ud0c0\uc11d\uc5d0 \ubc30\uc815\ud560 \ud0c0\uc790\ub97c \uc120\ud0dd\ud574 \uc8fc\uc138\uc694.")
+        return result
+    if normalized_new_batter not in valid_batters:
+        result.update(code="batter_not_in_offense_entry", message="\uc120\ud0dd\ud55c \ud0c0\uc790\uac00 \ud604\uc7ac \uacf5\uaca9 \ud300 \uc5d4\ud2b8\ub9ac\uc5d0 \uc5c6\uc2b5\ub2c8\ub2e4.")
+        return result
+    if prior_batter_id and normalized_new_batter == prior_batter_id:
+        result.update(code="same_prior_batter", message="\uc120\ud0dd \uc774\ubca4\ud2b8 \uc55e\ucabd \uad6c\uac04\uc758 \ud0c0\uc790\uc640 \ub3d9\uc77c\ud55c \uc120\uc218\ub85c\ub294 \uc0c8 \ud0c0\uc11d\uc744 \ubd84\ub9ac\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.")
+        return result
+
+    if current_pa is not None:
+        prior_terminal_index = _last_terminal_before(events, selected_index)
+        if prior_terminal_index is None:
+            result.update(code="missing_prior_terminal", message="\uc120\ud0dd \uc774\ubca4\ud2b8 \uc55e\ucabd\uc5d0 \uc774\uc804 \ud0c0\uc11d\uc758 \uc885\ub8cc \uc774\ubca4\ud2b8\uac00 \uc5c6\uc5b4 \uae30\ubcf8 \ubaa8\ub4dc\uc5d0\uc11c\ub294 \uc548\uc804\ud558\uac8c \ubd84\ub9ac\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4. \uace0\uae09 \ubaa8\ub4dc\uc758 \uc0c1\uc138 \ubd84\ub9ac\ub97c \uc0ac\uc6a9\ud574 \uc8fc\uc138\uc694.")
+            return result
+        segment_end = current_pa.end_index
+    else:
+        prior_terminal_index = _last_terminal_before(events, selected_index)
+        if prior_terminal_index is None:
+            result.update(code="missing_prior_terminal", message="\uc120\ud0dd \uc774\ubca4\ud2b8 \uc55e\ucabd\uc5d0 \uc774\uc804 \ud0c0\uc11d\uc758 \uc885\ub8cc \uc774\ubca4\ud2b8\uac00 \uc5c6\uc5b4 \uae30\ubcf8 \ubaa8\ub4dc\uc5d0\uc11c\ub294 \ubd84\ub9ac\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.")
+            return result
+        next_terminal_index = _first_terminal_from(events, selected_index)
+        segment_end = next_terminal_index if next_terminal_index is not None else len(events) - 1
+
+    intro_inserted = bool(auto_insert_intro and not _is_batter_intro_text(_event_text(events[selected_index])))
+    start_index = selected_index
+    changed_event_count = (segment_end - selected_index + 1) + (1 if intro_inserted else 0)
+    success_message = "\uc120\ud0dd \uc774\ubca4\ud2b8\ubd80\ud130 \uc0c8 \ub9b4\ub808\uc774 \ube14\ub85d\uc73c\ub85c \ubd84\ub9ac\ud560 \uc218 \uc788\uc2b5\ub2c8\ub2e4."
+    result.update(
+        {
+            "ok": True,
+            "code": "ok",
+            "message": success_message,
+            "new_batter_name": normalized_new_name or None,
+            "prior_terminal_index": prior_terminal_index,
+            "segment_end": segment_end,
+            "intro_inserted": intro_inserted,
+            "start_index": start_index,
+            "changed_event_count": changed_event_count,
+            "new_block_created": True,
+            "new_block_title": _split_block_title(player_index, normalized_new_batter, normalized_new_name),
+            "target_start_index": 0,
+        }
+    )
+    return result
+
+
+def _apply_split_plate_appearance_from_event(
+    payload: JsonDict,
+    *,
+    group_index: int,
+    block_index: int,
+    selected_index: int,
+    new_batter_id: str,
+    new_batter_name: str | None = None,
+    auto_insert_intro: bool = True,
+) -> dict[str, Any]:
+    result = _simple_split_analysis(
+        payload,
+        group_index=group_index,
+        block_index=block_index,
+        selected_index=selected_index,
+        new_batter_id=new_batter_id,
+        new_batter_name=new_batter_name,
+        auto_insert_intro=auto_insert_intro,
+    )
+    if not result.get("ok"):
+        return result
+
+    relay_group = (payload.get("relay") or [])[group_index]
+    source_block = relay_group[block_index]
+    events = source_block.setdefault("textOptions", [])
+    player_index = build_player_index(payload)
+    segment_end = int(result["segment_end"])
+    moved_events = events[selected_index : segment_end + 1]
+    del events[selected_index : segment_end + 1]
+    new_block_events = list(moved_events)
+    if result.get("intro_inserted"):
+        selected_event = moved_events[0]
+        intro_event = {
+            "seqno": None,
+            "type": 0,
+            "text": _intro_text(player_index, new_batter_id, new_batter_name),
+            "currentGameState": {
+                **_default_state(),
+                "batter": new_batter_id,
+                "pitcher": _event_pitcher_id(selected_event),
+            },
+        }
+        new_block_events.insert(0, intro_event)
+
+    _assign_batter_to_segment(
+        new_block_events,
+        0,
+        len(new_block_events) - 1,
+        new_batter_id,
+        new_batter_name,
+        player_index,
+        rewrite_text=True,
+    )
+    moved_tracks = _extract_tracks_for_events(source_block, moved_events)
+    new_block = {
+        "title": _split_block_title(player_index, new_batter_id, new_batter_name),
+        "titleStyle": source_block.get("titleStyle"),
+        "no": block_index + 1,
+        "inn": source_block.get("inn"),
+        "homeOrAway": source_block.get("homeOrAway"),
+        "statusCode": source_block.get("statusCode"),
+        "textOptions": new_block_events,
+        "ptsOptions": moved_tracks,
+    }
+    relay_group.insert(block_index + 1, new_block)
+    _renumber_block_numbers(relay_group)
+    result["start_index"] = 0
+    result["target_start_index"] = 0
+    result["target_block_index"] = block_index + 1
+    result["new_block_event_count"] = len(new_block_events)
+    result["new_block_end_index"] = len(new_block_events) - 1
+    return result
+
+
+def preview_split_plate_appearance_from_event(
+    payload: JsonDict,
+    *,
+    group_index: int,
+    block_index: int,
+    selected_index: int,
+    new_batter_id: str | None,
+    new_batter_name: str | None = None,
+    auto_insert_intro: bool = True,
+) -> dict[str, Any]:
+    result = _simple_split_analysis(
+        payload,
+        group_index=group_index,
+        block_index=block_index,
+        selected_index=selected_index,
+        new_batter_id=new_batter_id,
+        new_batter_name=new_batter_name,
+        auto_insert_intro=auto_insert_intro,
+    )
+    if not result.get("ok"):
+        return result
+
+    preview_payload = copy.deepcopy(payload)
+    preview_result = _apply_split_plate_appearance_from_event(
+        preview_payload,
+        group_index=group_index,
+        block_index=block_index,
+        selected_index=selected_index,
+        new_batter_id=str(result["new_batter_id"]),
+        new_batter_name=result.get("new_batter_name"),
+        auto_insert_intro=bool(auto_insert_intro),
+    )
+    _rebuilt, report = rebuild_payload(preview_payload)
+    preview_result["rebuild_delta_count"] = len(report.deltas)
+    return preview_result
+
+
+def split_plate_appearance_from_event(
+    payload: JsonDict,
+    *,
+    group_index: int,
+    block_index: int,
+    selected_index: int,
+    new_batter_id: str,
+    new_batter_name: str | None = None,
+    auto_insert_intro: bool = True,
+) -> dict[str, Any]:
+    return _apply_split_plate_appearance_from_event(
+        payload,
+        group_index=group_index,
+        block_index=block_index,
+        selected_index=selected_index,
+        new_batter_id=new_batter_id,
+        new_batter_name=new_batter_name,
+        auto_insert_intro=auto_insert_intro,
+    )
 
 
 def split_plate_appearance(
@@ -1517,7 +1896,7 @@ def merge_with_previous_plate_appearance(
     selected_index: int,
     merged_batter_id: str | None = None,
     merged_batter_name: str | None = None,
-) -> int | None:
+) -> tuple[int, int] | None:
     events = _block_events(payload, group_index, block_index)
     pa_list = summarize_plate_appearances(payload, group_index=group_index, block_index=block_index)
     current_pa_index = None
@@ -1525,17 +1904,30 @@ def merge_with_previous_plate_appearance(
         if pa.start_index <= selected_index <= pa.end_index:
             current_pa_index = pa_index
             break
-    if current_pa_index is None or current_pa_index == 0:
-        return None
-    prev_pa = pa_list[current_pa_index - 1]
-    curr_pa = pa_list[current_pa_index]
-    if prev_pa.end_index < len(events):
-        events.pop(prev_pa.end_index)
-        if curr_pa.start_index > prev_pa.end_index:
+    if current_pa_index is not None and current_pa_index > 0:
+        prev_pa = pa_list[current_pa_index - 1]
+        curr_pa = pa_list[current_pa_index]
+        if prev_pa.end_index < len(events):
+            events.pop(prev_pa.end_index)
+            if curr_pa.start_index > prev_pa.end_index:
+                curr_pa = PlateAppearanceSummary(
+                    group_index=curr_pa.group_index,
+                    block_index=curr_pa.block_index,
+                    start_index=max(prev_pa.end_index, curr_pa.start_index - 1),
+                    end_index=curr_pa.end_index - 1,
+                    batter_id=curr_pa.batter_id,
+                    batter_name=curr_pa.batter_name,
+                    pitcher_id=curr_pa.pitcher_id,
+                    result_type=curr_pa.result_type,
+                    result_text=curr_pa.result_text,
+                    is_terminal=curr_pa.is_terminal,
+                )
+        if curr_pa.start_index < len(events) and _is_batter_intro_text(_event_text(events[curr_pa.start_index])):
+            events.pop(curr_pa.start_index)
             curr_pa = PlateAppearanceSummary(
                 group_index=curr_pa.group_index,
                 block_index=curr_pa.block_index,
-                start_index=max(prev_pa.end_index, curr_pa.start_index - 1),
+                start_index=curr_pa.start_index,
                 end_index=curr_pa.end_index - 1,
                 batter_id=curr_pa.batter_id,
                 batter_name=curr_pa.batter_name,
@@ -1544,22 +1936,39 @@ def merge_with_previous_plate_appearance(
                 result_text=curr_pa.result_text,
                 is_terminal=curr_pa.is_terminal,
             )
-    if curr_pa.start_index < len(events) and _is_batter_intro_text(_event_text(events[curr_pa.start_index])):
-        events.pop(curr_pa.start_index)
-        curr_pa = PlateAppearanceSummary(
-            group_index=curr_pa.group_index,
-            block_index=curr_pa.block_index,
-            start_index=curr_pa.start_index,
-            end_index=curr_pa.end_index - 1,
-            batter_id=curr_pa.batter_id,
-            batter_name=curr_pa.batter_name,
-            pitcher_id=curr_pa.pitcher_id,
-            result_type=curr_pa.result_type,
-            result_text=curr_pa.result_text,
-            is_terminal=curr_pa.is_terminal,
-        )
+        player_index = build_player_index(payload)
+        batter_id = merged_batter_id or prev_pa.batter_id
+        batter_name = merged_batter_name or prev_pa.batter_name
+        _assign_batter_to_segment(events, prev_pa.start_index, curr_pa.end_index, batter_id, batter_name, player_index)
+        return block_index, prev_pa.start_index
+
+    if block_index <= 0:
+        return None
+
+    relay_group = (payload.get("relay") or [])[group_index]
+    prev_block = relay_group[block_index - 1]
+    curr_block = relay_group[block_index]
+    prev_events = prev_block.setdefault("textOptions", [])
+    curr_events = curr_block.setdefault("textOptions", [])
+    prev_pa_list = summarize_plate_appearances(payload, group_index=group_index, block_index=block_index - 1)
+    curr_pa_list = summarize_plate_appearances(payload, group_index=group_index, block_index=block_index)
+    if not prev_pa_list or not curr_pa_list:
+        return None
+
+    prev_pa = prev_pa_list[-1]
+    curr_pa = curr_pa_list[0]
+    if prev_pa.end_index < len(prev_events) and _is_terminal_event(prev_events[prev_pa.end_index]):
+        prev_events.pop(prev_pa.end_index)
+    if curr_pa.start_index < len(curr_events) and _is_batter_intro_text(_event_text(curr_events[curr_pa.start_index])):
+        curr_events.pop(curr_pa.start_index)
+
+    prev_block.setdefault("ptsOptions", []).extend(curr_block.get("ptsOptions") or [])
+    prev_events.extend(curr_events)
+    relay_group.pop(block_index)
+    _renumber_block_numbers(relay_group)
+
     player_index = build_player_index(payload)
     batter_id = merged_batter_id or prev_pa.batter_id
     batter_name = merged_batter_name or prev_pa.batter_name
-    _assign_batter_to_segment(events, prev_pa.start_index, curr_pa.end_index, batter_id, batter_name, player_index)
-    return prev_pa.start_index
+    _assign_batter_to_segment(prev_events, prev_pa.start_index, len(prev_events) - 1, batter_id, batter_name, player_index, rewrite_text=True)
+    return block_index - 1, prev_pa.start_index

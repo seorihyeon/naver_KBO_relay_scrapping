@@ -192,6 +192,48 @@ def test_editor_session_detects_duplicate_relay_issues(tmp_path: Path):
     assert "seq_gap" in codes
 
 
+def test_editor_session_allows_double_play_out_jump(tmp_path: Path):
+    payload = make_editor_payload()
+    payload["relay"][0][0]["textOptions"][1].update(
+        {
+            "text": "Away Batter 1 : 3루수 병살타 아웃",
+            "currentGameState": {
+                **payload["relay"][0][0]["textOptions"][1]["currentGameState"],
+                "out": 2,
+                "strike": 0,
+            },
+        }
+    )
+    path = tmp_path / "20260406DOUBLEPLAY.json"
+    path.write_text(pretty_game_json(payload), encoding="utf-8")
+
+    session = GameEditorSession.load(path)
+    findings = session.scan_relay_issues()
+
+    assert "state_jump:out" not in {finding["code"] for finding in findings}
+
+
+def test_editor_session_still_flags_unexpected_multi_out_jump(tmp_path: Path):
+    payload = make_editor_payload()
+    payload["relay"][0][0]["textOptions"][1].update(
+        {
+            "text": "Away Batter 1 : 유격수 땅볼 아웃",
+            "currentGameState": {
+                **payload["relay"][0][0]["textOptions"][1]["currentGameState"],
+                "out": 2,
+                "strike": 0,
+            },
+        }
+    )
+    path = tmp_path / "20260406BADOUTJUMP.json"
+    path.write_text(pretty_game_json(payload), encoding="utf-8")
+
+    session = GameEditorSession.load(path)
+    findings = session.scan_relay_issues()
+
+    assert "state_jump:out" in {finding["code"] for finding in findings}
+
+
 def test_migrate_one_file_writes_minimal_schema(tmp_path: Path):
     source_path = tmp_path / "20260406TEST.json"
     raw_payload = make_editor_payload()
@@ -205,4 +247,3 @@ def test_migrate_one_file_writes_minimal_schema(tmp_path: Path):
     assert result["backup_path"] is not None
     assert migrated["schema_version"] == 2
     assert "currentPlayersInfo" not in migrated["relay"][0][0]["textOptions"][0]
-
