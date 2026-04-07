@@ -11,10 +11,7 @@ Agents working in this repository should prioritize **data correctness, schema d
 Before making changes, review the documents that match your task.
 
 - `README.md`
-- `docs/minimal_game_json_schema.md`
-- `docs/json_correction_editor.md`
-- `docs/gui_architecture.md`
-- `docs/postgres_backfill.md`
+- `docs/project_guide.md`
 
 ## Documentation language rule
 
@@ -152,7 +149,7 @@ Also review:
 - `src/kbo_ingest/game_json.py`
 - `src/kbo_ingest/normalize_game.py`
 - `src/kbo_ingest/pa_scoring.py`
-- ingestion-related code paths referenced by `docs/minimal_game_json_schema.md`
+- ingestion-related code paths referenced by `docs/project_guide.md`
 
 ### When changing GUI layout or jobs
 

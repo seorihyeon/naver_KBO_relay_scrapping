@@ -4,24 +4,24 @@ from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from web_interface import Scrapper
+from web_interface import NaverScraper
 
 
 def test_normalize_game_url_with_relative_path():
     assert (
-        Scrapper.normalize_game_url("/game/20260403SSKT02026")
+        NaverScraper.normalize_game_url("/game/20260403SSKT02026")
         == "https://m.sports.naver.com/game/20260403SSKT02026"
     )
 
 
 def test_normalize_game_url_with_absolute_url():
     url = "https://m.sports.naver.com/game/20250409NCKT02025"
-    assert Scrapper.normalize_game_url(url) == url
+    assert NaverScraper.normalize_game_url(url) == url
 
 
 def test_extract_game_id_from_nested_game_url():
     assert (
-        Scrapper.extract_game_id("https://m.sports.naver.com/game/20250409NCKT02025/relay")
+        NaverScraper.extract_game_id("https://m.sports.naver.com/game/20250409NCKT02025/relay")
         == "20250409NCKT02025"
     )
 
@@ -38,12 +38,12 @@ def test_get_inning_count_from_relay_summary():
         }
     }
 
-    scraper = Scrapper.__new__(Scrapper)
+    scraper = NaverScraper.__new__(NaverScraper)
     assert scraper.get_inning_count(relay_summary) == 10
 
 
 def test_throttle_api_request_waits_for_remaining_interval():
-    scraper = Scrapper.__new__(Scrapper)
+    scraper = NaverScraper.__new__(NaverScraper)
     scraper.api_request_interval = 0.25
     scraper._last_api_request_finished_at = 10.0
 
@@ -55,7 +55,7 @@ def test_throttle_api_request_waits_for_remaining_interval():
 
 
 def test_throttle_api_request_skips_sleep_when_interval_elapsed():
-    scraper = Scrapper.__new__(Scrapper)
+    scraper = NaverScraper.__new__(NaverScraper)
     scraper.api_request_interval = 0.25
     scraper._last_api_request_finished_at = 10.0
 

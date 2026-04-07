@@ -1,51 +1,15 @@
-# KBO Naver Relay Collection / Correction / Ingestion
+# KBO Scrapping Analysis
 
-This repository collects KBO game JSON from Naver, lets you correct bad source JSON in a structured DearPyGui editor, and loads the corrected games into PostgreSQL for replay and validation.
+이 저장소는 Naver KBO 중계 JSON을 수집하고, 구조화된 GUI에서 소스 오류를 보정한 뒤, PostgreSQL 적재와 검증/리플레이까지 재현 가능하게 수행하는 프로젝트입니다.
 
-## Main entry points
+운영 규칙과 워크플로는 [`docs/project_guide.md`](docs/project_guide.md) 한 문서에 정리되어 있습니다.
 
-### Integrated GUI
+자주 쓰는 진입점:
 
 ```bash
 python kbo_integrated_gui.py
-```
-
-Tabs:
-
-- `데이터 수집`: collect Naver games into `games/**/*.json`
-- `수정/보정`: open a game JSON, edit `lineup / relay / record`, insert missing PAs/events, apply meaning-based result fixes, split/merge merged PAs, run validation, save with backup/history
-- `데이터 적재`: create schema and ingest JSON into PostgreSQL
-- `Replay / 검증`: inspect normalized replay data from PostgreSQL
-
-### Batch migration to the minimal schema
-
-Dry-run against a directory:
-
-```bash
 python migrate_game_json.py games
+python check_data.py games
 ```
 
-Rewrite files in place with backup + patch:
-
-```bash
-python migrate_game_json.py games --in-place
-```
-
-Write migrated files into another directory:
-
-```bash
-python migrate_game_json.py games --output-dir migrated_games
-```
-
-## Notes
-
-- Collected JSON now uses the repository's minimal schema (`schema_version = 2`).
-- Older JSON files are still accepted by validation/ingestion because they are normalized on load.
-- Editor saves create `.history/<game_stem>/*.bak`, `*.patch`, and `changes.jsonl`.
-
-## Docs
-
-- Editor usage: [`docs/json_correction_editor.md`](docs/json_correction_editor.md)
-- Minimal schema + field analysis + migration notes: [`docs/minimal_game_json_schema.md`](docs/minimal_game_json_schema.md)
-- PostgreSQL loading flow: [`docs/postgres_backfill.md`](docs/postgres_backfill.md)
-- GUI architecture + refactoring guide: [`docs/gui_architecture.md`](docs/gui_architecture.md)
+저장 JSON은 최소 스키마 `schema_version = 2`를 유지하며, GUI 저장 시 `.history/<game_stem>/` 아래에 백업과 변경 이력이 함께 생성됩니다.

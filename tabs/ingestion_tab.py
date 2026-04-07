@@ -8,8 +8,8 @@ import dearpygui.dearpygui as dpg
 from gui.components import FileSelector, LogPanel, ProgressPanel, SummaryCard
 from gui.ingestion_service import DatabaseService, IngestionService
 from gui.jobs import JobEvent, JobHandle, JobRunner, JobSnapshot
+from gui.state import AppState
 from gui.tags import GLOBAL_TAGS, TagNamespace
-from .shared_state import AppState
 
 
 class IngestionTab:

@@ -2,7 +2,6 @@ from .date_picker import DatePicker
 from .file_selector import FileSelector
 from .game_selector import GameSelector
 from .log_panel import LogPanel
-from .modal import ModalWindow
 from .navigation import NavigatorPanel
 from .progress_panel import ProgressPanel
 from .summary_card import SummaryCard
@@ -12,7 +11,6 @@ __all__ = [
     "FileSelector",
     "GameSelector",
     "LogPanel",
-    "ModalWindow",
     "NavigatorPanel",
     "DatePicker",
     "ProgressPanel",

@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import check_data
 from gui.jobs import JobContext, JobResult
 from src.kbo_ingest.game_json import minimize_game_payload, pretty_game_json
-from web_interface import Scrapper
+from web_interface import NaverScraper
 
 
 @dataclass(frozen=True)
@@ -75,10 +75,10 @@ class CollectionService:
         debug_log_path = request.save_dir / f"scrape_debug_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
         day_logs: dict[str, CollectionLogRecord] = {}
         failed_targets: list[CollectionTarget] = []
-        scraper: Scrapper | None = None
+        scraper: NaverScraper | None = None
 
         try:
-            scraper = Scrapper(wait=request.timeout_seconds, path=str(request.save_dir), headless=request.headless)
+            scraper = NaverScraper(wait=request.timeout_seconds, path=str(request.save_dir), headless=request.headless)
             context.log("info", "collector started", mode=request.mode, save_dir=str(request.save_dir))
             targets = request.targets or self._discover_targets(scraper, request, context)
             total = max(1, len(targets))
@@ -117,7 +117,7 @@ class CollectionService:
                 except Exception:
                     pass
 
-    def _discover_targets(self, scraper: Scrapper, request: CollectionRequest, context: JobContext) -> list[CollectionTarget]:
+    def _discover_targets(self, scraper: NaverScraper, request: CollectionRequest, context: JobContext) -> list[CollectionTarget]:
         targets: list[CollectionTarget] = []
         if request.mode == "season" and request.season_year is not None:
             for month in range(1, 13):
@@ -140,7 +140,7 @@ class CollectionService:
 
     def _fetch_one(
         self,
-        scraper: Scrapper,
+        scraper: NaverScraper,
         request: CollectionRequest,
         target: CollectionTarget,
         debug_log_path: Path,
@@ -149,7 +149,7 @@ class CollectionService:
         context.log("info", "collecting game", date=target.game_date.isoformat(), url=target.url)
         target_dir = request.save_dir / str(target.game_date.year)
         target_dir.mkdir(parents=True, exist_ok=True)
-        normalized_url = Scrapper.normalize_game_url(target.url)
+        normalized_url = NaverScraper.normalize_game_url(target.url)
         file_name = normalized_url.split("/")[-1] + ".json"
         target_path = target_dir / file_name
         existing_outcome = self._try_reuse_existing(target_path)
@@ -167,7 +167,7 @@ class CollectionService:
                     raise ValueError("missing lineup, relay, or record payload")
                 payload = minimize_game_payload(
                     {"lineup": lineup_data, "relay": inning_data, "record": record_data},
-                    game_id=Scrapper.extract_game_id(normalized_url),
+                    game_id=NaverScraper.extract_game_id(normalized_url),
                     game_url=normalized_url,
                     collected_at=dt.datetime.now(dt.UTC).isoformat(),
                 )

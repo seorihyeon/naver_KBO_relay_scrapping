@@ -749,14 +749,14 @@ def main() -> int:
             ok_count += 1
             if result["warnings"]:
                 warning_count += 1
-                print(f"⚠️  {result['file']}")
+                print(f"[WARN] {result['file']}")
                 for msg in result["warnings"]:
                     print(f"   - {msg}")
             else:
-                print(f"✅ {result['file']}")
+                print(f"[OK] {result['file']}")
         else:
             fail_count += 1
-            print(f"❌ {result['file']}")
+            print(f"[FAIL] {result['file']}")
             for msg in result["issues"]:
                 print(f"   - {msg}")
             if result["warnings"]:

@@ -9,7 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 dpg = pytest.importorskip("dearpygui.dearpygui")
 
 from tabs.editor_tab import CorrectionEditorTab
-from tabs.shared_state import AppState
+from gui.state import AppState
 
 
 def make_smoke_payload() -> dict:

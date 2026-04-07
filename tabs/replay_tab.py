@@ -18,8 +18,8 @@ from gui.replay import (
 )
 from gui.replay.models import DerivedState, EventRow
 from gui.replay.roster import build_roster_context
+from gui.state import AppState
 from gui.tags import TagNamespace
-from .shared_state import AppState
 
 
 @dataclass

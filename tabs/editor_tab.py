@@ -6,6 +6,7 @@ from typing import Any
 import dearpygui.dearpygui as dpg
 
 from dpg_utils import prompt_native_text
+from gui.state import AppState
 from src.kbo_ingest.correction_engine import (
     EVENT_TEMPLATE_TYPES,
     RESULT_TYPES,
@@ -16,8 +17,6 @@ from src.kbo_ingest.correction_engine import (
 )
 from src.kbo_ingest.editor_core import GameEditorSession
 from src.kbo_ingest.game_json import CURRENT_GAME_STATE_FIELDS
-
-from .shared_state import AppState
 
 
 GAME_INFO_FIELDS = [

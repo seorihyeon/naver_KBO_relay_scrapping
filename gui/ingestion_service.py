@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import time
-from dataclasses import dataclass
 from typing import Any
 
 import psycopg
@@ -13,14 +12,8 @@ from gui.state import GameOption
 from src.kbo_ingest.db import create_schema, reset_database
 from src.kbo_ingest.manifest import build_manifest, load_manifest, resolve_stage_sizes, write_manifest
 from src.kbo_ingest.pipeline import load_one_game
-from src.kbo_ingest.runner import load_and_validate_entries, run_sampling_loop
+from src.kbo_ingest.runner import run_sampling_loop
 from src.kbo_ingest.validation import validate_loaded_entries, validate_loaded_entries_parallel
-
-
-@dataclass(frozen=True)
-class DbConnectionInfo:
-    dsn: str
-
 
 class DatabaseService:
     def connect(self, dsn: str) -> psycopg.Connection:
@@ -59,6 +52,18 @@ class DatabaseService:
 
 
 class IngestionService:
+    def _load_paths(self, conn: psycopg.Connection, paths: list[Path], context: JobContext) -> None:
+        total = max(1, len(paths))
+        for index, path in enumerate(paths, start=1):
+            context.check_cancelled()
+            load_one_game(conn, path)
+            if index % 10 == 0 or index == len(paths):
+                context.set_progress(index / total, f"loaded {index}/{len(paths)}")
+
+    def _write_report(self, report_path: Path, report: dict[str, Any]) -> None:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def build_manifest_job(
         self,
         *,
@@ -102,19 +107,13 @@ class IngestionService:
         context: JobContext,
     ) -> JobResult:
         entries = load_manifest(manifest_path)["entries"]
-        report_path.parent.mkdir(parents=True, exist_ok=True)
         load_started = time.perf_counter()
         with psycopg.connect(dsn) as conn:
             if reset_first:
                 context.log("info", "resetting database")
                 reset_database(conn)
             create_schema(conn, schema_path)
-            total = max(1, len(entries))
-            for index, entry in enumerate(entries, start=1):
-                context.check_cancelled()
-                load_one_game(conn, Path(entry["path"]))
-                if index % 10 == 0 or index == len(entries):
-                    context.set_progress(index / total, f"loaded {index}/{len(entries)}")
+            self._load_paths(conn, [Path(entry["path"]) for entry in entries], context)
             conn.commit()
             validation_started = time.perf_counter()
             if validate_after_load:
@@ -132,7 +131,7 @@ class IngestionService:
             report["load_seconds"] = time.perf_counter() - load_started
             report["validation_seconds"] = time.perf_counter() - validation_started if validate_after_load else 0.0
             report["report_json_path"] = report_path.as_posix()
-            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._write_report(report_path, report)
         context.set_progress(1.0, "ingest finished")
         return JobResult(
             summary="Manifest ingested",
@@ -161,8 +160,7 @@ class IngestionService:
         else:
             with psycopg.connect(dsn) as conn:
                 report = validate_loaded_entries(conn, entries)
-        report_path.parent.mkdir(parents=True, exist_ok=True)
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._write_report(report_path, report)
         context.set_progress(1.0, "validation finished")
         return JobResult(
             summary="Validation finished",
@@ -226,14 +224,9 @@ class IngestionService:
         context: JobContext,
     ) -> JobResult:
         files = sorted(data_dir.rglob("*.json"))
-        total = max(1, len(files))
         with psycopg.connect(dsn) as conn:
             if reset_first:
                 reset_database(conn)
             create_schema(conn, schema_path)
-            for index, json_path in enumerate(files, start=1):
-                context.check_cancelled()
-                load_one_game(conn, json_path)
-                if index % 10 == 0 or index == len(files):
-                    context.set_progress(index / total, f"loaded {index}/{len(files)} files")
+            self._load_paths(conn, files, context)
         return JobResult(summary="Directory ingested", detail=f"files={len(files)}")

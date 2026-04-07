@@ -10,8 +10,8 @@ import dearpygui.dearpygui as dpg
 from gui.collection_service import CollectionRequest, CollectionService, CollectionTarget
 from gui.components import DatePicker, FileSelector, LogPanel, ProgressPanel, SummaryCard
 from gui.jobs import JobEvent, JobHandle, JobRunner, JobSnapshot
+from gui.state import AppState
 from gui.tags import TagNamespace
-from .shared_state import AppState
 
 
 @dataclass

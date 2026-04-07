@@ -8,7 +8,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 # Selenium을 이용해 스크래핑을 수행하는 클래스
-class Scrapper:
+class NaverScraper:
     NAVER_MOBILE_BASE_URL = "https://m.sports.naver.com"
     NAVER_API_BASE_URL = "https://api-gw.sports.naver.com/schedule/games"
     DEFAULT_USER_AGENT = (
@@ -348,4 +348,5 @@ class Scrapper:
 
             cur_year, cur_month = next_year, next_month
 
-    
+
+Scrapper = NaverScraper
