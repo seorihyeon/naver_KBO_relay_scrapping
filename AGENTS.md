@@ -208,3 +208,26 @@ Before finishing a task, verify:
 - Add focused tests for pure logic.
 - Avoid speculative cleanup unrelated to the task.
 - Favor explicit baseball/data invariants over convenience shortcuts.
+
+## Work memo file rule
+
+For non-trivial tasks, create a temporary memo file before starting implementation and use it throughout the task.
+
+The memo file should include:
+
+- the task summary
+- a detailed step-by-step plan
+- assumptions and constraints
+- a checklist for completion status
+- notes about files to modify, validation to run, and follow-up items
+
+Expected workflow:
+
+1. Create a memo file at the start of the task.
+2. Write a detailed implementation plan before making major edits.
+3. Refer back to the memo while working.
+4. Mark items as done as each step is completed.
+5. Update the memo if the plan changes during execution.
+6. Delete the memo file before finishing the task.
+
+The memo file is a temporary working artifact and should not remain in the repository after the task is complete.

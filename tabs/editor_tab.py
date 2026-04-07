@@ -8,7 +8,6 @@ import dearpygui.dearpygui as dpg
 from dpg_utils import prompt_native_text
 from gui.state import AppState
 from src.kbo_ingest.correction_engine import (
-    EVENT_TEMPLATE_TYPES,
     RESULT_TYPES,
     RUNNER_BASE_CHOICES,
     build_player_index,
@@ -76,6 +75,74 @@ INTEGER_STATE_FIELDS = {
     "out",
 }
 BASE_STATE_FIELDS = {"base1", "base2", "base3"}
+EDITOR_MODES = ["기본 모드", "고급 모드"]
+ACTION_TABS = {
+    "add": "action_add_tab",
+    "missing_pa": "action_missing_pa_tab",
+    "meaning": "action_meaning_tab",
+    "split_merge": "action_split_merge_tab",
+    "preview": "action_preview_tab",
+}
+ACTION_LABELS = {
+    "add": "이벤트 추가",
+    "missing_pa": "누락 타석 복구",
+    "meaning": "결과 의미 수정",
+    "split_merge": "타석 분리 / 병합",
+    "preview": "자동 재계산 미리보기",
+}
+ADD_TEMPLATE_LABELS = {
+    "pitch": "투구",
+    "bat_result": "타격 결과",
+    "baserunning": "주루",
+    "substitution": "선수 교체",
+    "review": "비디오 판독",
+    "other": "기타 raw 이벤트",
+}
+ADD_TEMPLATE_LABELS_REVERSE = {label: key for key, label in ADD_TEMPLATE_LABELS.items()}
+BASIC_ADD_TEMPLATE_TYPES = ["pitch", "bat_result", "baserunning", "substitution"]
+INSERT_MODE_LABELS = {
+    "before": "선택 이벤트 앞",
+    "after": "선택 이벤트 뒤",
+}
+INSERT_MODE_LABELS_REVERSE = {label: key for key, label in INSERT_MODE_LABELS.items()}
+PITCH_RESULT_LABELS = {
+    "": "선택 안 함",
+    "B": "볼",
+    "S": "스트라이크",
+    "F": "파울",
+    "SW": "헛스윙 스트라이크",
+    "X": "타격",
+    "K": "삼진",
+}
+PITCH_RESULT_LABELS_REVERSE = {label: key for key, label in PITCH_RESULT_LABELS.items()}
+RESULT_TYPE_LABELS = {
+    "out": "아웃",
+    "single": "안타",
+    "double": "2루타",
+    "triple": "3루타",
+    "home_run": "홈런",
+    "walk": "볼넷",
+    "intentional_walk": "고의4구",
+    "hit_by_pitch": "몸에 맞는 볼",
+    "error": "실책 출루",
+    "fielders_choice": "야수선택",
+    "sacrifice_bunt": "희생번트",
+    "sacrifice_fly": "희생플라이",
+    "strikeout": "삼진",
+    "dropped_third": "낫아웃",
+    "double_play": "병살",
+    "other": "기타",
+}
+RESULT_TYPE_LABELS_REVERSE = {label: key for key, label in RESULT_TYPE_LABELS.items()}
+FINDING_TYPE_GROUPS = {
+    "전체": None,
+    "누락/점프": ("missing_", "state_jump", "seq_gap"),
+    "중복": ("duplicate_",),
+    "재계산 차이": ("auto_rebuild_drift",),
+    "검증 이슈": ("validate_game", "validate_game_warning"),
+}
+LINEUP_SECTIONS = ["home_starter", "home_bullpen", "home_candidate", "away_starter", "away_bullpen", "away_candidate"]
+RECORD_SCOPE_ITEMS = ["batter:home", "batter:away", "pitcher:home", "pitcher:away"]
 
 
 class CorrectionEditorTab:
@@ -94,6 +161,7 @@ class CorrectionEditorTab:
         self.selected_finding_index: int | None = None
         self.selected_game_info_key: str | None = None
         self.auto_preview: dict[str, Any] | None = None
+        self._last_validation_signatures: set[str] = set()
 
     def _t(self, name: str) -> str:
         return f"editor_{name}"
@@ -115,6 +183,84 @@ class CorrectionEditorTab:
     def _clear_children(self, tag: str) -> None:
         if dpg.does_item_exist(tag):
             dpg.delete_item(tag, children_only=True)
+
+    def _set_tab_value(self, tag: str, value: str) -> None:
+        if dpg.does_item_exist(tag):
+            dpg.set_value(tag, value)
+
+    def _half_label(self, home_or_away: Any) -> str:
+        return "초" if str(home_or_away) == "0" else "말"
+
+    def _block_label(self, block: dict[str, Any] | None) -> str:
+        if not block:
+            return "-"
+        return f"{block.get('inn', '?')}회{self._half_label(block.get('homeOrAway'))}"
+
+    def _selected_mode(self) -> str:
+        if dpg.does_item_exist(self._t("editor_mode")):
+            return str(dpg.get_value(self._t("editor_mode")) or EDITOR_MODES[0])
+        return EDITOR_MODES[0]
+
+    def _action_tab_tag(self, action_key: str) -> str:
+        return self._t(ACTION_TABS[action_key])
+
+    def _set_active_action(self, action_key: str) -> None:
+        if dpg.does_item_exist(self._t("action_selector")):
+            dpg.set_value(self._t("action_selector"), ACTION_LABELS[action_key])
+        tab_tag = ACTION_TABS.get(action_key)
+        if tab_tag:
+            self._set_tab_value(self._t("action_tabs"), self._t(tab_tag))
+        self.refresh_action_sections()
+
+    def _current_action_key(self) -> str:
+        if dpg.does_item_exist(self._t("action_selector")):
+            selected_label = str(dpg.get_value(self._t("action_selector")) or "")
+            for action_key, label in ACTION_LABELS.items():
+                if selected_label == label:
+                    return action_key
+        if not dpg.does_item_exist(self._t("action_tabs")):
+            return "meaning"
+        current = str(dpg.get_value(self._t("action_tabs")) or "")
+        for action_key, tab_name in ACTION_TABS.items():
+            if current == self._t(tab_name):
+                return action_key
+        return "meaning"
+
+    def refresh_action_sections(self) -> None:
+        active = self._current_action_key()
+        section_map = {
+            "add": self._t("section_structured_add"),
+            "missing_pa": self._t("section_missing_pa"),
+            "meaning": self._t("section_meaning_edit"),
+            "split_merge": self._t("section_pa_split_merge"),
+        }
+        for action_key, tag in section_map.items():
+            self._toggle_group(tag, action_key == active)
+        self._toggle_group(self._t("basic_preview_panel"), active == "preview")
+
+    def _recommended_action(self, finding: dict[str, Any] | None = None) -> str:
+        code = str((finding or {}).get("code") or "")
+        if code.startswith("missing_") or code.startswith("state_jump"):
+            return "meaning"
+        if code.startswith("duplicate_") or code == "seq_gap" or code == "auto_rebuild_drift":
+            return "preview"
+        if code.startswith("validate_game"):
+            location = (finding or {}).get("location") or {}
+            if location.get("tab") == "relay":
+                return "meaning"
+            return "preview"
+        pa_summary = self._selected_pa_summary()
+        if pa_summary and not pa_summary.is_terminal:
+            return "missing_pa"
+        event = self._get_selected_event() or {}
+        if parse_result_type(str(event.get("text") or "")):
+            return "meaning"
+        if self.selected_event_ref is not None:
+            return "add"
+        return "preview"
+
+    def _finding_signature(self, finding: dict[str, Any]) -> str:
+        return f"{finding.get('severity')}|{finding.get('code')}|{finding.get('message')}"
 
     def _relative_label(self, path: Path, root: Path) -> str:
         try:
@@ -261,7 +407,9 @@ class CorrectionEditorTab:
 
     def _add_labeled_input_text(self, tag: str, label: str, *, multiline: bool = False, height: int = 0) -> None:
         dpg.add_text(label)
-        show_helper = multiline or any(token in label.lower() for token in ("name", "detail", "text", "memo", "note"))
+        show_helper = multiline or any(token in label.lower() for token in ("name", "detail", "text", "memo", "note")) or any(
+            token in label for token in ("이름", "설명", "텍스트", "문구", "메모")
+        )
         if show_helper:
             with dpg.group(horizontal=True):
                 kwargs: dict[str, Any] = {"tag": tag, "label": "", "width": -70}
@@ -297,19 +445,52 @@ class CorrectionEditorTab:
         for index in range(1, count + 1):
             dpg.add_separator()
             dpg.add_text(f"{title_prefix} {index}")
-            self._add_labeled_combo(self._t(f"{prefix}_runner_{index}_start"), "start", items=RUNNER_BASE_CHOICES, default_value="")
-            self._add_labeled_combo(self._t(f"{prefix}_runner_{index}_end"), "end", items=RUNNER_BASE_CHOICES, default_value="")
-            self._add_labeled_input_text(self._t(f"{prefix}_runner_{index}_id"), "runner_id")
-            self._add_labeled_input_text(self._t(f"{prefix}_runner_{index}_name"), "runner_name")
+            self._add_labeled_combo(self._t(f"{prefix}_runner_{index}_start"), "출발 위치", items=RUNNER_BASE_CHOICES, default_value="")
+            self._add_labeled_combo(self._t(f"{prefix}_runner_{index}_end"), "도착 위치", items=RUNNER_BASE_CHOICES, default_value="")
+            self._add_labeled_input_text(self._t(f"{prefix}_runner_{index}_id"), "주자 id (선택)")
+            self._add_labeled_input_text(self._t(f"{prefix}_runner_{index}_name"), "주자 이름 (선택)")
 
     def _add_pa_pitch_editor(self, prefix: str, *, count: int = 5) -> None:
         for index in range(1, count + 1):
             dpg.add_separator()
-            dpg.add_text(f"pitch {index}")
-            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_result"), "result")
-            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_num"), "pitch_num")
-            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_id"), "pts_pitch_id")
-            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_text"), "text")
+            dpg.add_text(f"투구 {index}")
+            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_result"), "투구 결과")
+            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_num"), "투구 번호")
+            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_id"), "원본 pitch id")
+            self._add_labeled_input_text(self._t(f"{prefix}_pitch_{index}_text"), "문구")
+
+    def _mapped_choice_value(self, raw_value: Any, *, reverse_map: dict[str, str], default: str) -> str:
+        value = str(raw_value or "").strip()
+        if value in reverse_map.values():
+            return value
+        return reverse_map.get(value, default)
+
+    def _set_mapped_choice(self, tag: str, value: str | None, *, label_map: dict[str, str], default: str) -> None:
+        normalized = str(value or "").strip()
+        display = label_map.get(normalized, label_map[default])
+        self._set_value_if_exists(tag, display)
+
+    def _event_batter_id(self, event: dict[str, Any] | None) -> str | None:
+        if not event:
+            return None
+        state = event.get("currentGameState") or {}
+        batter_id = str(state.get("batter") or (event.get("batterRecord") or {}).get("pcode") or "").strip()
+        return batter_id or None
+
+    def _event_pitcher_id(self, event: dict[str, Any] | None) -> str | None:
+        if not event:
+            return None
+        state = event.get("currentGameState") or {}
+        pitcher_id = str(state.get("pitcher") or "").strip()
+        return pitcher_id or None
+
+    def _coerce_int(self, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _player_name_lookup(self, player_id: str | None) -> str:
         if not self.session or not player_id:
@@ -364,6 +545,118 @@ class CorrectionEditorTab:
                 return pa
         return None
 
+    def _selected_insert_mode(self, prefix: str) -> str:
+        tag = self._t(f"{prefix}_insert_mode")
+        if not dpg.does_item_exist(tag):
+            return "after"
+        raw_value = dpg.get_value(tag)
+        return self._mapped_choice_value(raw_value, reverse_map=INSERT_MODE_LABELS_REVERSE, default="after")
+
+    def _selected_add_template_type(self) -> str:
+        tag = self._t("add_template_type")
+        if not dpg.does_item_exist(tag):
+            return "pitch"
+        raw_value = dpg.get_value(tag)
+        return self._mapped_choice_value(raw_value, reverse_map=ADD_TEMPLATE_LABELS_REVERSE, default="pitch")
+
+    def _selected_pitch_result(self) -> str | None:
+        tag = self._t("add_pitch_result_display")
+        if not dpg.does_item_exist(tag):
+            return None
+        pitch_result = self._mapped_choice_value(dpg.get_value(tag), reverse_map=PITCH_RESULT_LABELS_REVERSE, default="")
+        return pitch_result or None
+
+    def _selected_result_type(self, prefix: str) -> str | None:
+        tag = self._t(f"{prefix}_result_type")
+        if not dpg.does_item_exist(tag):
+            return None
+        result_type = self._mapped_choice_value(dpg.get_value(tag), reverse_map=RESULT_TYPE_LABELS_REVERSE, default="other")
+        return result_type or None
+
+    def _candidate_insert_index(self, insert_mode: str) -> int:
+        block = self._get_selected_block() or {}
+        events = block.get("textOptions") or []
+        if self.selected_event_ref is None:
+            return len(events) if insert_mode == "after" else 0
+        event_index = self.selected_event_ref[2]
+        return event_index if insert_mode == "before" else event_index + 1
+
+    def _build_insert_context(self, *, insert_mode: str) -> dict[str, Any]:
+        block = self._get_selected_block() or {}
+        event = self._get_selected_event() or {}
+        events = block.get("textOptions") or []
+        pa_summary = self._selected_pa_summary()
+        insert_at = max(0, min(self._candidate_insert_index(insert_mode), len(events)))
+        state = event.get("currentGameState") or {}
+        batter_id = self._event_batter_id(event)
+        pitcher_id = self._event_pitcher_id(event)
+        batter_name = self._player_name_lookup(batter_id) or None
+        pitcher_name = self._player_name_lookup(pitcher_id) or None
+        offense_side = self._selected_offense_side()
+        prev_batter_id, prev_batter_name = self._adjacent_batter(batter_id, side=offense_side, offset=-1)
+        next_batter_id, next_batter_name = self._adjacent_batter(batter_id, side=offense_side, offset=1)
+        selected_index = self.selected_event_ref[2] if self.selected_event_ref is not None else None
+        same_plate_appearance = True
+
+        if pa_summary and selected_index is not None:
+            if insert_mode == "after" and pa_summary.is_terminal and selected_index >= pa_summary.end_index and next_batter_id:
+                batter_id, batter_name = next_batter_id, next_batter_name
+                same_plate_appearance = False
+            elif insert_mode == "before" and selected_index <= pa_summary.start_index and prev_batter_id:
+                batter_id, batter_name = prev_batter_id, prev_batter_name
+                same_plate_appearance = False
+
+        prev_seqno: int | None = None
+        for index in range(insert_at - 1, -1, -1):
+            prev_seqno = self._coerce_int(events[index].get("seqno"))
+            if prev_seqno is not None:
+                break
+
+        latest_pitch_num: int | None = None
+        if same_plate_appearance and pa_summary:
+            search_start = pa_summary.start_index
+            for index in range(insert_at - 1, search_start - 1, -1):
+                latest_pitch_num = self._coerce_int(events[index].get("pitchNum"))
+                if latest_pitch_num is not None:
+                    break
+
+        pitch_num_candidate = (latest_pitch_num + 1) if latest_pitch_num is not None else 1
+        result_pitch_num = latest_pitch_num
+        bases = ", ".join(base for base, occupied in (("1루", state.get("base1")), ("2루", state.get("base2")), ("3루", state.get("base3"))) if occupied) or "주자 없음"
+        game_info = ((self.session.payload.get("lineup") or {}).get("game_info") or {}) if self.session else {}
+        offense_team_name = game_info.get("aName") if offense_side == "away" else game_info.get("hName")
+        defense_team_name = game_info.get("hName") if offense_side == "away" else game_info.get("aName")
+        offense_team = str(offense_team_name or "").strip() or offense_side
+        defense_team = str(defense_team_name or "").strip() or ("home" if offense_side == "away" else "away")
+
+        return {
+            "block": block,
+            "insert_mode": insert_mode,
+            "insert_at": insert_at,
+            "inning_label": self._block_label(block),
+            "offense_side": offense_side,
+            "offense_team": offense_team,
+            "defense_team": defense_team,
+            "batter_id": batter_id,
+            "batter_name": batter_name,
+            "pitcher_id": pitcher_id,
+            "pitcher_name": pitcher_name,
+            "prev_batter_id": prev_batter_id,
+            "prev_batter_name": prev_batter_name,
+            "next_batter_id": next_batter_id,
+            "next_batter_name": next_batter_name,
+            "pa_summary": pa_summary,
+            "same_plate_appearance": same_plate_appearance,
+            "seqno_candidate": 1 if prev_seqno is None else prev_seqno + 1,
+            "pitch_num_candidate": pitch_num_candidate,
+            "result_pitch_num_candidate": result_pitch_num,
+            "ball": state.get("ball", 0),
+            "strike": state.get("strike", 0),
+            "out": state.get("out", 0),
+            "bases": bases,
+            "selected_text": str(event.get("text") or "(문구 없음)"),
+        }
+
     def _extract_event_detail(self, text: str, batter_name: str | None = None) -> str:
         detail = str(text or "").strip()
         if " : " in detail:
@@ -388,6 +681,88 @@ class CorrectionEditorTab:
             self._set_value_if_exists(self._t(f"{prefix}_pitch_{index}_id"), "")
             self._set_value_if_exists(self._t(f"{prefix}_pitch_{index}_text"), "")
 
+    def _populate_add_action_defaults(
+        self,
+        *,
+        batter_id: str | None,
+        batter_name: str | None,
+        pitcher_id: str | None,
+        pitch_result: str | None,
+        result_type: str,
+    ) -> None:
+        template_type = self._selected_add_template_type()
+        if template_type not in ADD_TEMPLATE_LABELS:
+            template_type = "pitch"
+        if self._selected_mode() == EDITOR_MODES[0] and template_type not in BASIC_ADD_TEMPLATE_TYPES:
+            template_type = "pitch"
+        insert_mode = self._selected_insert_mode("add")
+        context = self._build_insert_context(insert_mode=insert_mode)
+        default_pitch_result = pitch_result or ("X" if result_type != "other" else "")
+
+        self._set_mapped_choice(self._t("add_template_type"), template_type, label_map=ADD_TEMPLATE_LABELS, default="pitch")
+        self._set_mapped_choice(self._t("add_insert_mode"), insert_mode, label_map=INSERT_MODE_LABELS, default="after")
+        self._set_value_if_exists(self._t("add_batter_id"), context["batter_id"] or batter_id or "")
+        self._set_value_if_exists(self._t("add_batter_name"), context["batter_name"] or batter_name or "")
+        self._set_value_if_exists(self._t("add_pitcher_id"), context["pitcher_id"] or pitcher_id or "")
+        self._set_value_if_exists(self._t("add_pitch_num"), "")
+        self._set_value_if_exists(self._t("add_pts_pitch_id"), "")
+        self._set_value_if_exists(self._t("add_detail"), "")
+        self._set_value_if_exists(self._t("add_text"), "")
+        self._set_value_if_exists(self._t("add_pitch_result"), default_pitch_result)
+        self._set_mapped_choice(self._t("add_pitch_result_display"), default_pitch_result, label_map=PITCH_RESULT_LABELS, default="")
+        self._set_mapped_choice(self._t("add_result_type"), result_type or "out", label_map=RESULT_TYPE_LABELS, default="out")
+        self._clear_runner_move_inputs("add")
+        self.refresh_add_action_form()
+
+    def refresh_add_action_form(self) -> None:
+        template_type = self._selected_add_template_type()
+        if self._selected_mode() == EDITOR_MODES[0] and template_type not in BASIC_ADD_TEMPLATE_TYPES:
+            template_type = "pitch"
+            self._set_mapped_choice(self._t("add_template_type"), template_type, label_map=ADD_TEMPLATE_LABELS, default="pitch")
+        insert_mode = self._selected_insert_mode("add")
+        context = self._build_insert_context(insert_mode=insert_mode)
+        pitch_result = self._selected_pitch_result()
+        self._set_value_if_exists(self._t("add_pitch_result"), pitch_result or "")
+        default_pitch_num = context["pitch_num_candidate"] if template_type == "pitch" else context["result_pitch_num_candidate"]
+        self._set_value_if_exists(self._t("add_pitch_num"), "" if default_pitch_num is None else str(default_pitch_num))
+        self._set_value_if_exists(self._t("add_batter_id"), context["batter_id"] or "")
+        self._set_value_if_exists(self._t("add_batter_name"), context["batter_name"] or "")
+        self._set_value_if_exists(self._t("add_pitcher_id"), context["pitcher_id"] or "")
+
+        self._toggle_group(self._t("add_pitch_fields"), template_type == "pitch")
+        self._toggle_group(self._t("add_bat_result_fields"), template_type == "bat_result")
+        self._toggle_group(self._t("add_runner_move_section"), template_type in {"bat_result", "baserunning"})
+
+        text_label = "표시 문구 / 메모 (선택)"
+        help_text = "투구 결과와 선택적 pitch id만 입력하면 나머지 문맥은 현재 경기 흐름에서 자동으로 채웁니다."
+        if template_type == "bat_result":
+            text_label = "결과 문구 (선택)"
+            help_text = "결과 유형과 필요한 문구만 입력하면 타자/투수/타석 연결은 현재 문맥으로 자동 보정합니다."
+        elif template_type == "baserunning":
+            text_label = "주루 설명"
+            help_text = "필요한 주자 이동만 보완하면 현재 이닝과 상태 연결은 자동 재계산으로 이어집니다."
+        elif template_type == "substitution":
+            text_label = "교체 설명"
+            help_text = "기본 모드에서는 교체 설명만 추가합니다. 세부 교체 필드는 고급 모드에서 직접 확인할 수 있습니다."
+        self._set_value_if_exists(self._t("add_text_label"), text_label)
+        self._set_value_if_exists(self._t("add_action_help_text"), help_text)
+
+        lines = [
+            f"삽입 위치: {context['inning_label']} / {INSERT_MODE_LABELS[insert_mode]} / index {context['insert_at']}",
+            f"자동 채움: 타자 {context['batter_name'] or '-'} ({context['batter_id'] or '-'}) / 투수 {context['pitcher_name'] or '-'} ({context['pitcher_id'] or '-'})",
+            f"현재 상태: B{context['ball']} S{context['strike']} O{context['out']} / {context['bases']} / {context['offense_team']} 공격",
+        ]
+        if template_type == "pitch":
+            lines.append(f"투구 번호 후보: {context['pitch_num_candidate']} / seqno 후보: {context['seqno_candidate']}")
+        elif template_type == "bat_result":
+            result_pitch_num = context["result_pitch_num_candidate"]
+            lines.append(f"연결 투구 번호: {'-' if result_pitch_num is None else result_pitch_num} / seqno 후보: {context['seqno_candidate']}")
+        else:
+            lines.append(f"seqno 후보: {context['seqno_candidate']} / 기준 이벤트: {context['selected_text']}")
+        if not context["same_plate_appearance"]:
+            lines.append("선택 위치가 타석 경계에 있어 인접 타순을 기준으로 기본값을 잡았습니다.")
+        self._set_value_if_exists(self._t("add_context_hint"), "\n".join(lines))
+
     def populate_structured_editors(self) -> None:
         event = self._get_selected_event() or {}
         state = event.get("currentGameState") or {}
@@ -405,19 +780,26 @@ class CorrectionEditorTab:
         next_batter_id, next_batter_name = self._adjacent_batter(batter_id, side=offense_side, offset=1)
         pa_summary = self._selected_pa_summary()
 
-        for prefix in ("add", "meaning"):
-            self._set_value_if_exists(self._t(f"{prefix}_batter_id"), batter_id or "")
-            self._set_value_if_exists(self._t(f"{prefix}_batter_name"), batter_name or "")
-            self._set_value_if_exists(self._t(f"{prefix}_pitcher_id"), pitcher_id or "")
-            self._set_value_if_exists(self._t(f"{prefix}_detail"), detail_text)
-            self._set_value_if_exists(self._t(f"{prefix}_text"), event_text)
-            self._set_value_if_exists(self._t(f"{prefix}_pitch_result"), pitch_result or "")
-            self._set_value_if_exists(self._t(f"{prefix}_pitch_num"), "" if pitch_num in (None, "") else str(pitch_num))
-            self._set_value_if_exists(self._t(f"{prefix}_pts_pitch_id"), pts_pitch_id or "")
-            self._set_value_if_exists(self._t(f"{prefix}_result_type"), result_type)
-            self._clear_runner_move_inputs(prefix)
+        self._populate_add_action_defaults(
+            batter_id=batter_id,
+            batter_name=batter_name,
+            pitcher_id=pitcher_id,
+            pitch_result=pitch_result,
+            result_type=result_type,
+        )
 
-        pa_insert_mode = str(dpg.get_value(self._t("pa_insert_mode")) or "before") if dpg.does_item_exist(self._t("pa_insert_mode")) else "before"
+        self._set_value_if_exists(self._t("meaning_batter_id"), batter_id or "")
+        self._set_value_if_exists(self._t("meaning_batter_name"), batter_name or "")
+        self._set_value_if_exists(self._t("meaning_pitcher_id"), pitcher_id or "")
+        self._set_value_if_exists(self._t("meaning_detail"), detail_text)
+        self._set_value_if_exists(self._t("meaning_text"), event_text)
+        self._set_value_if_exists(self._t("meaning_pitch_result"), pitch_result or "")
+        self._set_value_if_exists(self._t("meaning_pitch_num"), "" if pitch_num in (None, "") else str(pitch_num))
+        self._set_value_if_exists(self._t("meaning_pts_pitch_id"), pts_pitch_id or "")
+        self._set_mapped_choice(self._t("meaning_result_type"), result_type, label_map=RESULT_TYPE_LABELS, default="out")
+        self._clear_runner_move_inputs("meaning")
+
+        pa_insert_mode = self._selected_insert_mode("pa") if dpg.does_item_exist(self._t("pa_insert_mode")) else "before"
         default_pa_batter_id = prev_batter_id if pa_insert_mode == "before" else next_batter_id
         default_pa_batter_name = prev_batter_name if pa_insert_mode == "before" else next_batter_name
         if not default_pa_batter_id:
@@ -430,6 +812,7 @@ class CorrectionEditorTab:
         self._set_value_if_exists(self._t("pa_pitch_result"), "")
         self._set_value_if_exists(self._t("pa_pitch_num"), "")
         self._set_value_if_exists(self._t("pa_pts_pitch_id"), "")
+        self._set_mapped_choice(self._t("pa_result_type"), "single", label_map=RESULT_TYPE_LABELS, default="single")
         self._clear_pa_pitch_inputs("pa")
         self._clear_runner_move_inputs("pa")
 
@@ -441,13 +824,18 @@ class CorrectionEditorTab:
         self._set_value_if_exists(self._t("split_first_batter_name"), split_first_batter_name or "")
         self._set_value_if_exists(self._t("split_first_detail"), "")
         self._set_value_if_exists(self._t("split_first_text"), "")
-        self._set_value_if_exists(self._t("split_first_result_type"), "out")
+        self._set_mapped_choice(self._t("split_first_result_type"), "out", label_map=RESULT_TYPE_LABELS, default="out")
         self._clear_runner_move_inputs("split_first")
         self._set_value_if_exists(self._t("split_second_batter_id"), split_second_batter_id or "")
         self._set_value_if_exists(self._t("split_second_batter_name"), split_second_batter_name or "")
         self._set_value_if_exists(self._t("split_second_detail"), detail_text)
         self._set_value_if_exists(self._t("split_second_text"), event_text)
-        self._set_value_if_exists(self._t("split_second_result_type"), pa_summary.result_type if pa_summary and pa_summary.result_type else result_type)
+        self._set_mapped_choice(
+            self._t("split_second_result_type"),
+            pa_summary.result_type if pa_summary and pa_summary.result_type else result_type,
+            label_map=RESULT_TYPE_LABELS,
+            default="out",
+        )
         self._clear_runner_move_inputs("split_second")
 
         merge_batter_id = pa_summary.batter_id if pa_summary and pa_summary.batter_id else batter_id
@@ -458,60 +846,105 @@ class CorrectionEditorTab:
     def refresh_context_summary(self) -> None:
         block = self._get_selected_block() or {}
         event = self._get_selected_event() or {}
+        event_ref = self.selected_event_ref
+        if not block or event_ref is None:
+            self._set_value_if_exists(
+                self._t("context_summary_text"),
+                "선택한 이벤트가 없습니다.\n\n좌측 문제 목록이나 중앙 경기 흐름에서 이벤트를 고르면 여기서 상황과 추천 액션을 확인할 수 있습니다.",
+            )
+            self._set_value_if_exists(self._t("context_flow_text"), "선택 이벤트 앞/현재/뒤 문맥이 여기에 표시됩니다.")
+            self._set_value_if_exists(self._t("action_recommendation_text"), f"추천 작업: {ACTION_LABELS[self._recommended_action()]}")
+            return
+
+        _group_index, block_index, event_index = event_ref
         state = event.get("currentGameState") or {}
-        inning = block.get("inn", "-")
-        half = "Top" if str(block.get("homeOrAway", "0")) == "0" else "Bottom"
         batter_id = str(state.get("batter") or (event.get("batterRecord") or {}).get("pcode") or "").strip() or None
         pitcher_id = str(state.get("pitcher") or "").strip() or None
         batter_name = self._player_name_lookup(batter_id) or batter_id or "-"
         pitcher_name = self._player_name_lookup(pitcher_id) or pitcher_id or "-"
-        balls = state.get("ball", 0)
-        strikes = state.get("strike", 0)
-        outs = state.get("out", 0)
-        bases = f"{'1' if state.get('base1') else '-'}{'2' if state.get('base2') else '-'}{'3' if state.get('base3') else '-'}"
-        score = f"{state.get('awayScore', 0)}:{state.get('homeScore', 0)}"
-        event_ref = "-" if self.selected_event_ref is None else str(self.selected_event_ref[2])
+        pa_summary = self._selected_pa_summary()
+        bases = ", ".join(base for base, occupied in (("1루", state.get("base1")), ("2루", state.get("base2")), ("3루", state.get("base3"))) if occupied) or "주자 없음"
         lines = [
-            f"Inning: {inning} {half} | Event: {event_ref}",
-            f"Batter: {batter_name}",
-            f"Pitcher: {pitcher_name}",
-            f"Count: B{balls}-S{strikes}-O{outs} | Bases: {bases} | Score A:H {score}",
-            "",
-            str(event.get("text") or "(no selected event)"),
+            "현재 선택",
+            f"- 위치: {self._block_label(block)} / 블록 {block_index} / 이벤트 {event_index}",
+            f"- 타자/투수: {batter_name} vs {pitcher_name}",
+            f"- 카운트: 볼 {state.get('ball', 0)} / 스트라이크 {state.get('strike', 0)} / 아웃 {state.get('out', 0)}",
+            f"- 주자/점수: {bases} | 원정 {state.get('awayScore', 0)} : 홈 {state.get('homeScore', 0)}",
         ]
+        if pa_summary:
+            lines.append(
+                f"- 현재 타석: 이벤트 {pa_summary.start_index}-{pa_summary.end_index}"
+                f" | 결과 {pa_summary.result_text or '진행 중'}"
+            )
+        lines.extend(["", "선택 이벤트 문구", str(event.get("text") or "(문구 없음)")])
         self._set_value_if_exists(self._t("context_summary_text"), "\n".join(lines))
 
+        block_events = block.get("textOptions") or []
+        flow_lines = []
+        if pa_summary:
+            flow_lines.extend(
+                [
+                    "현재 타석 요약",
+                    f"- 범위: 이벤트 {pa_summary.start_index}-{pa_summary.end_index}",
+                    f"- 타자: {pa_summary.batter_name or pa_summary.batter_id or '-'}",
+                    f"- 투수: {self._player_name_lookup(pa_summary.pitcher_id) or pa_summary.pitcher_id or '-'}",
+                    f"- 결과: {pa_summary.result_text or '진행 중'}",
+                    "",
+                ]
+            )
+        flow_lines.append("주변 이벤트")
+        for offset, label in ((-1, "선택 이벤트 앞"), (0, "현재 선택"), (1, "선택 이벤트 뒤")):
+            target_index = event_index + offset
+            if 0 <= target_index < len(block_events):
+                target_event = block_events[target_index]
+                target_state = target_event.get("currentGameState") or {}
+                flow_lines.append(
+                    f"- {label}: [{target_index}] {target_event.get('text') or '(문구 없음)'} "
+                    f"| B{target_state.get('ball', 0)} S{target_state.get('strike', 0)} O{target_state.get('out', 0)}"
+                )
+            else:
+                flow_lines.append(f"- {label}: 없음")
+        self._set_value_if_exists(self._t("context_flow_text"), "\n".join(flow_lines))
+
+        finding = None
+        findings = (self.validation_result or {}).get("findings", [])
+        if self.selected_finding_index is not None and 0 <= self.selected_finding_index < len(findings):
+            finding = findings[self.selected_finding_index]
+        self._set_value_if_exists(self._t("action_recommendation_text"), f"추천 작업: {ACTION_LABELS[self._recommended_action(finding)]}")
+
     def apply_editor_mode(self) -> None:
-        mode = str(dpg.get_value(self._t("editor_mode")) or "Quick Fix") if dpg.does_item_exist(self._t("editor_mode")) else "Quick Fix"
-        sections = {
-            "Quick Fix": [
-                self._t("section_structured_add"),
-                self._t("section_missing_pa"),
-                self._t("section_meaning_edit"),
-                self._t("section_pa_split_merge"),
-            ],
-            "Relay Raw": [
-                self._t("section_relay_block"),
-                self._t("section_relay_event"),
-            ],
-            "Roster/Game": [
-                self._t("section_game_info"),
-                self._t("section_lineup_row"),
-            ],
-            "Record": [
-                self._t("record_totals_section"),
-            ],
-        }
-        active_tags = set(sections.get(mode, sections["Quick Fix"]))
-        for tag_list in sections.values():
-            for tag in tag_list:
-                self._toggle_group(tag, tag in active_tags)
-        if mode == "Record":
+        mode = self._selected_mode()
+        basic_mode = mode == EDITOR_MODES[0]
+        self._toggle_group(self._t("basic_mode_panel"), basic_mode)
+        self._toggle_group(self._t("advanced_mode_panel"), not basic_mode)
+        for tag in (
+            self._t("game_info_tab"),
+            self._t("lineup_tab"),
+            self._t("record_tab"),
+            self._t("validation_tab"),
+            self._t("diff_tab"),
+            self._t("history_tab"),
+            self._t("auto_preview_tab"),
+        ):
+            self._toggle_group(tag, not basic_mode)
+        self._toggle_group(self._t("relay_tab"), True)
+        self._set_value_if_exists(
+            self._t("mode_help_text"),
+            "문제 목록 -> 경기 흐름 -> 구조화 액션 순서로 수정합니다."
+            if basic_mode
+            else "원본 이벤트, 게임 정보, 기록을 직접 확인하거나 고급 편집합니다.",
+        )
+        if basic_mode:
+            finding = None
+            findings = (self.validation_result or {}).get("findings", [])
+            if self.selected_finding_index is not None and 0 <= self.selected_finding_index < len(findings):
+                finding = findings[self.selected_finding_index]
+            self._set_active_action(self._recommended_action(finding))
+            self.refresh_action_sections()
+            self._set_tab_value(self._t("detail_tabs"), self._t("relay_tab"))
+        else:
             self._toggle_group(self._t("record_batter_editor_group"), self.selected_record_table == "batter")
             self._toggle_group(self._t("record_pitcher_editor_group"), self.selected_record_table == "pitcher")
-        else:
-            self._toggle_group(self._t("record_batter_editor_group"), False)
-            self._toggle_group(self._t("record_pitcher_editor_group"), False)
 
     def _detail_field_tags(self) -> list[str]:
         tags: list[str] = []
@@ -526,7 +959,7 @@ class CorrectionEditorTab:
         for side in ("inPlayer", "outPlayer"):
             tags.extend(self._t(f"{side}_{field}") for field in PLAYER_CHANGE_PLAYER_FIELDS)
 
-        tags.extend(self._t(name) for name in ("add_template_type", "add_insert_mode", "add_result_type"))
+        tags.extend(self._t(name) for name in ("add_template_type", "add_insert_mode", "add_result_type", "add_pitch_result_display", "add_context_hint"))
         tags.extend(self._t(f"add_{field}") for field in ("batter_id", "batter_name", "pitcher_id", "detail", "text", "pitch_result", "pitch_num", "pts_pitch_id"))
         for index in range(1, 4):
             tags.extend(
@@ -604,8 +1037,41 @@ class CorrectionEditorTab:
                 except SystemError:
                     continue
 
+    def _update_validation_delta_text(self, previous: set[str], current: set[str]) -> None:
+        resolved = sorted(previous - current)
+        added = sorted(current - previous)
+        lines = [f"해결됨 {len(resolved)}건", f"새로 감지됨 {len(added)}건"]
+        if resolved:
+            lines.extend(["", "해결된 항목"])
+            lines.extend(resolved[:10])
+        if added:
+            lines.extend(["", "새 항목"])
+            lines.extend(added[:10])
+        self._set_value_if_exists(self._t("finding_delta"), "\n".join(lines))
+
+    def _refresh_validation_snapshot(self) -> None:
+        if not self.session:
+            self.validation_result = None
+            self.selected_finding_index = None
+            self._last_validation_signatures = set()
+            self._set_value_if_exists(self._t("finding_summary"), "검증 결과 없음")
+            self._set_value_if_exists(self._t("finding_delta"), "")
+            return
+        previous = self._last_validation_signatures
+        self.validation_result = self.session.validate()
+        current = {self._finding_signature(item) for item in self.validation_result.get("findings", [])}
+        self._last_validation_signatures = current
+        if self.selected_finding_index is not None and self.selected_finding_index >= len(self.validation_result.get("findings", [])):
+            self.selected_finding_index = 0 if self.validation_result.get("findings") else None
+        self._set_value_if_exists(
+            self._t("finding_summary"),
+            f"오류 {self.validation_result['error_count']}건 / 경고 {self.validation_result['warning_count']}건",
+        )
+        self._update_validation_delta_text(previous, current)
+
     def refresh_all_views(self) -> None:
         self.auto_preview = None
+        self._refresh_validation_snapshot()
         self.refresh_header()
         self.refresh_game_info_table()
         self.refresh_lineup_table()
@@ -628,26 +1094,26 @@ class CorrectionEditorTab:
 
     def refresh_header(self) -> None:
         if not self.session:
-            self._set_value_if_exists(self._t("loaded_file"), "No file loaded")
+            self._set_value_if_exists(self._t("loaded_file"), "불러온 파일 없음")
             self._set_value_if_exists(self._t("save_status"), "-")
             return
         self._set_value_if_exists(self._t("loaded_file"), self.session.path.as_posix())
-        save_status = self.session.last_saved_at or "Not saved in this session"
-        dirty = "modified" if self.session.has_unsaved_changes() else "clean"
+        save_status = self.session.last_saved_at or "이번 세션에서 아직 저장하지 않음"
+        dirty = "수정됨" if self.session.has_unsaved_changes() else "저장됨"
         self._set_value_if_exists(self._t("save_status"), f"{save_status} | {dirty}")
 
     def refresh_selection_summary(self) -> None:
         parts = []
         if self.selected_game_info_key:
-            parts.append(f"Game Info: {self.selected_game_info_key}")
+            parts.append(f"게임 정보 {self.selected_game_info_key}")
         if self.selected_lineup_row is not None:
-            parts.append(f"Lineup: {self.selected_lineup_section}[{self.selected_lineup_row}]")
+            parts.append(f"라인업 {self.selected_lineup_section}[{self.selected_lineup_row}]")
         if self.selected_record_row is not None:
-            parts.append(f"Record: {self.selected_record_table}.{self.selected_record_side}[{self.selected_record_row}]")
+            parts.append(f"기록 {self.selected_record_table}.{self.selected_record_side}[{self.selected_record_row}]")
         if self.selected_block_ref is not None:
-            parts.append(f"Relay block: {self.selected_block_ref[0]}:{self.selected_block_ref[1]}")
+            parts.append(f"중계 블록 {self.selected_block_ref[0]}:{self.selected_block_ref[1]}")
         if self.selected_event_ref is not None:
-            parts.append(f"Relay event: {self.selected_event_ref[2]}")
+            parts.append(f"이벤트 {self.selected_event_ref[2]}")
         self._set_value_if_exists(self._t("selection_summary"), " | ".join(parts) if parts else "선택된 항목 없음")
 
     def refresh_game_info_table(self) -> None:
@@ -1033,6 +1499,7 @@ class CorrectionEditorTab:
         self.populate_event_editor()
         self.populate_structured_editors()
         self.refresh_context_summary()
+        self.apply_editor_mode()
         self.refresh_selection_summary()
 
     def select_event(self, ref: tuple[int, int, int]) -> None:
@@ -1044,7 +1511,19 @@ class CorrectionEditorTab:
         self.populate_event_editor()
         self.populate_structured_editors()
         self.refresh_context_summary()
+        self.apply_editor_mode()
         self.refresh_selection_summary()
+
+    def select_relative_event(self, delta: int) -> None:
+        if self.selected_event_ref is None:
+            return
+        block = self._get_selected_block() or {}
+        events = block.get("textOptions") or []
+        if not events:
+            return
+        group_index, block_index, event_index = self.selected_event_ref
+        next_index = max(0, min(len(events) - 1, event_index + delta))
+        self.select_event((group_index, block_index, next_index))
 
     def refresh_relay_event_table(self) -> None:
         self._clear_children(self._t("relay_events"))
@@ -1309,7 +1788,7 @@ class CorrectionEditorTab:
             "batter_id": self._input_text_value(self._t(f"{prefix}_batter_id")),
             "batter_name": self._input_text_value(self._t(f"{prefix}_batter_name")),
             "pitcher_id": self._input_text_value(self._t(f"{prefix}_pitcher_id")),
-            "result_type": str(dpg.get_value(self._t(f"{prefix}_result_type")) or "").strip() or None,
+            "result_type": self._selected_result_type(prefix),
             "detail": self._input_text_value(self._t(f"{prefix}_detail")),
             "text": self._input_text_value(self._t(f"{prefix}_text")),
             "pitch_result": self._input_text_value(self._t(f"{prefix}_pitch_result")),
@@ -1318,25 +1797,44 @@ class CorrectionEditorTab:
             "runner_moves": self._input_runner_moves(prefix),
         }
 
+    def _structured_add_spec_from_inputs(self) -> tuple[str, dict[str, Any]]:
+        template_type = self._selected_add_template_type()
+        context = self._build_insert_context(insert_mode=self._selected_insert_mode("add"))
+        spec: dict[str, Any] = {
+            "batter_id": self._input_text_value(self._t("add_batter_id")) or context["batter_id"],
+            "batter_name": self._input_text_value(self._t("add_batter_name")) or context["batter_name"],
+            "pitcher_id": self._input_text_value(self._t("add_pitcher_id")) or context["pitcher_id"],
+            "text": self._input_text_value(self._t("add_text")),
+        }
+        if template_type == "pitch":
+            spec["pitch_result"] = self._selected_pitch_result()
+            spec["pitch_num"] = context["pitch_num_candidate"]
+            spec["pts_pitch_id"] = self._input_text_value(self._t("add_pts_pitch_id"))
+        elif template_type == "bat_result":
+            spec["result_type"] = self._selected_result_type("add")
+            spec["detail"] = self._input_text_value(self._t("add_detail"))
+            spec["pitch_num"] = context["result_pitch_num_candidate"]
+            spec["runner_moves"] = self._input_runner_moves("add")
+        elif template_type == "baserunning":
+            spec["runner_moves"] = self._input_runner_moves("add")
+        elif template_type == "substitution":
+            spec["text"] = self._input_text_value(self._t("add_text")) or "선수 교체"
+        return template_type, spec
+
     def insert_structured_event(self) -> None:
         session = self._session_required()
         if session is None or self.selected_block_ref is None:
             return
         group_index, block_index = self.selected_block_ref
-        template_type = str(dpg.get_value(self._t("add_template_type")) or "pitch")
-        insert_mode = str(dpg.get_value(self._t("add_insert_mode")) or "after")
-        if self.selected_event_ref is None:
-            insert_at = 0
-        elif insert_mode == "before":
-            insert_at = self.selected_event_ref[2]
-        else:
-            insert_at = self.selected_event_ref[2] + 1
+        template_type, spec = self._structured_add_spec_from_inputs()
+        insert_mode = self._selected_insert_mode("add")
+        insert_at = self._candidate_insert_index(insert_mode)
         inserted = session.insert_event_template(
             group_index=group_index,
             block_index=block_index,
             insert_at=insert_at,
             template_type=template_type,
-            spec=self._semantic_spec_from_inputs("add"),
+            spec=spec,
         )
         if inserted:
             self.selected_event_ref = (group_index, block_index, inserted[0])
@@ -1347,7 +1845,7 @@ class CorrectionEditorTab:
         if session is None or self.selected_block_ref is None:
             return
         group_index, block_index = self.selected_block_ref
-        insert_mode = str(dpg.get_value(self._t("pa_insert_mode")) or "before")
+        insert_mode = self._selected_insert_mode("pa")
         if self.selected_event_ref is None:
             insert_at = 0
         elif insert_mode == "after":
@@ -1407,13 +1905,13 @@ class CorrectionEditorTab:
         spec = {
             "first_batter_id": self._input_text_value(self._t("split_first_batter_id")),
             "first_batter_name": self._input_text_value(self._t("split_first_batter_name")),
-            "first_result_type": str(dpg.get_value(self._t("split_first_result_type")) or "").strip() or None,
+            "first_result_type": self._selected_result_type("split_first"),
             "first_detail": self._input_text_value(self._t("split_first_detail")),
             "first_text": self._input_text_value(self._t("split_first_text")),
             "first_runner_moves": self._input_runner_moves("split_first"),
             "second_batter_id": self._input_text_value(self._t("split_second_batter_id")),
             "second_batter_name": self._input_text_value(self._t("split_second_batter_name")),
-            "second_result_type": str(dpg.get_value(self._t("split_second_result_type")) or "").strip() or None,
+            "second_result_type": self._selected_result_type("split_second"),
             "second_detail": self._input_text_value(self._t("split_second_detail")),
             "second_text": self._input_text_value(self._t("split_second_text")),
             "second_runner_moves": self._input_runner_moves("split_second"),
@@ -1448,21 +1946,10 @@ class CorrectionEditorTab:
         session = self._session_required()
         if session is None:
             return
-        previous_messages = {f"{item.get('code')}|{item.get('message')}" for item in (self.validation_result or {}).get("findings", [])}
-        self.validation_result = session.validate()
-        current_messages = {f"{item.get('code')}|{item.get('message')}" for item in (self.validation_result or {}).get("findings", [])}
-        resolved = sorted(previous_messages - current_messages)
-        added = sorted(current_messages - previous_messages)
+        self._refresh_validation_snapshot()
         self.refresh_finding_table()
-        self._set_value_if_exists(self._t("finding_summary"), f"errors={self.validation_result['error_count']} warnings={self.validation_result['warning_count']}")
-        delta_lines = [f"resolved={len(resolved)}", f"new={len(added)}"]
-        if resolved:
-            delta_lines.extend(["", "Resolved:"])
-            delta_lines.extend(resolved[:10])
-        if added:
-            delta_lines.extend(["", "New:"])
-            delta_lines.extend(added[:10])
-        self._set_value_if_exists(self._t("finding_delta"), "\n".join(delta_lines))
+        self.refresh_context_summary()
+        self.apply_editor_mode()
         self.state.set_status(
             "info" if self.validation_result["ok"] else "warn",
             "검증 실행 완료",
@@ -1470,8 +1957,65 @@ class CorrectionEditorTab:
             source="수정/보정",
         )
 
+    def _finding_location_text(self, finding: dict[str, Any]) -> str:
+        location = finding.get("location") or {}
+        tab = location.get("tab")
+        if tab == "relay":
+            relay = (self.session.payload.get("relay") or []) if self.session else []
+            group_index = location.get("group_index")
+            block_index = location.get("block_index")
+            event_index = location.get("event_index")
+            if group_index is None or block_index is None:
+                return "중계"
+            try:
+                block = relay[group_index][block_index]
+            except Exception:
+                return "중계"
+            suffix = f" / 이벤트 {event_index}" if event_index is not None else ""
+            return f"{self._block_label(block)}{suffix}"
+        if tab == "record":
+            return f"기록 {location.get('table', '-')}.{location.get('side', '-')}"
+        return "-"
+
+    def _refresh_finding_filter_items(self) -> None:
+        if not self.validation_result:
+            return
+        inning_items = {"전체"}
+        for finding in self.validation_result.get("findings", []):
+            location = finding.get("location") or {}
+            if location.get("tab") != "relay" or not self.session:
+                continue
+            try:
+                block = self.session.payload["relay"][location["group_index"]][location["block_index"]]
+            except Exception:
+                continue
+            inning_items.add(str(block.get("inn", "")))
+        if dpg.does_item_exist(self._t("finding_inning_filter")):
+            dpg.configure_item(self._t("finding_inning_filter"), items=sorted(inning_items, key=lambda item: (item != "전체", item)))
+        if dpg.does_item_exist(self._t("finding_half_filter")):
+            dpg.configure_item(self._t("finding_half_filter"), items=["전체", "초", "말"])
+
+    def _finding_matches_filters(self, finding: dict[str, Any]) -> bool:
+        query = str(dpg.get_value(self._t("finding_query")) or "").strip().lower() if dpg.does_item_exist(self._t("finding_query")) else ""
+        type_group = str(dpg.get_value(self._t("finding_type_filter")) or "전체") if dpg.does_item_exist(self._t("finding_type_filter")) else "전체"
+        inning_filter = str(dpg.get_value(self._t("finding_inning_filter")) or "전체") if dpg.does_item_exist(self._t("finding_inning_filter")) else "전체"
+        half_filter = str(dpg.get_value(self._t("finding_half_filter")) or "전체") if dpg.does_item_exist(self._t("finding_half_filter")) else "전체"
+        code = str(finding.get("code") or "")
+        location_text = self._finding_location_text(finding)
+        if query and query not in " ".join((code, str(finding.get("message") or ""), location_text)).lower():
+            return False
+        code_prefixes = FINDING_TYPE_GROUPS.get(type_group)
+        if code_prefixes and not any(code.startswith(prefix) for prefix in code_prefixes):
+            return False
+        if inning_filter != "전체" and inning_filter not in location_text:
+            return False
+        if half_filter != "전체" and half_filter not in location_text:
+            return False
+        return True
+
     def refresh_finding_table(self) -> None:
         self._clear_children(self._t("findings_table"))
+        self._refresh_finding_filter_items()
         with dpg.table(
             tag=self._t("findings_table_inner"),
             parent=self._t("findings_table"),
@@ -1483,10 +2027,12 @@ class CorrectionEditorTab:
             borders_outerV=True,
             policy=dpg.mvTable_SizingStretchProp,
         ):
-            for label in ("#", "severity", "code", "message"):
+            for label in ("#", "심각도", "유형", "위치", "설명"):
                 dpg.add_table_column(label=label)
             findings = (self.validation_result or {}).get("findings", [])
             for index, finding in enumerate(findings):
+                if not self._finding_matches_filters(finding):
+                    continue
                 with dpg.table_row():
                     dpg.add_selectable(
                         label=str(index),
@@ -1494,8 +2040,9 @@ class CorrectionEditorTab:
                         callback=lambda _s, _a, user_data: self.select_finding(user_data),
                         user_data=index,
                     )
-                    dpg.add_text(str(finding.get("severity", "")))
+                    dpg.add_text("오류" if str(finding.get("severity", "")) == "error" else "경고")
                     dpg.add_text(str(finding.get("code", "")))
+                    dpg.add_text(self._finding_location_text(finding))
                     dpg.add_text(str(finding.get("message", "")))
 
     def select_finding(self, index: int) -> None:
@@ -1503,9 +2050,13 @@ class CorrectionEditorTab:
         findings = (self.validation_result or {}).get("findings", [])
         if not (0 <= index < len(findings)):
             return
-        location = findings[index].get("location")
+        finding = findings[index]
+        location = finding.get("location")
         if location:
             self.jump_to_location(location)
+        self._set_active_action(self._recommended_action(finding))
+        self.refresh_context_summary()
+        self.apply_editor_mode()
         self.refresh_finding_table()
 
     def jump_to_location(self, location: dict[str, Any]) -> None:
@@ -1515,14 +2066,15 @@ class CorrectionEditorTab:
             self.selected_record_side = location.get("side", "home")
             self.selected_record_row = location.get("row_index")
             self._set_value_if_exists(self._t("record_scope"), f"{self.selected_record_table}:{self.selected_record_side}")
-            dpg.set_value(self._t("detail_tabs"), self._t("record_tab"))
+            self._set_value_if_exists(self._t("editor_mode"), EDITOR_MODES[1])
+            self._set_tab_value(self._t("detail_tabs"), self._t("record_tab"))
             self.refresh_record_table()
             self.populate_record_editor()
         elif tab == "relay":
             self.selected_block_ref = (location.get("group_index"), location.get("block_index"))
             if location.get("event_index") is not None:
                 self.selected_event_ref = (*self.selected_block_ref, location.get("event_index"))
-            dpg.set_value(self._t("detail_tabs"), self._t("relay_tab"))
+            self._set_tab_value(self._t("detail_tabs"), self._t("relay_tab"))
             self.refresh_relay_tree()
             self.refresh_relay_event_table()
             self.populate_block_editor()
@@ -1555,6 +2107,7 @@ class CorrectionEditorTab:
     def refresh_auto_preview_text(self) -> None:
         if not self.session:
             self._set_value_if_exists(self._t("auto_preview_text"), "")
+            self._set_value_if_exists(self._t("basic_auto_preview_text"), "")
             return
         if self.auto_preview is None:
             try:
@@ -1563,6 +2116,7 @@ class CorrectionEditorTab:
                 self.auto_preview = None
         if not self.auto_preview:
             self._set_value_if_exists(self._t("auto_preview_text"), "")
+            self._set_value_if_exists(self._t("basic_auto_preview_text"), "")
             return
         pa_lines = []
         for pa in self.auto_preview.get("plate_appearances", [])[:20]:
@@ -1580,7 +2134,9 @@ class CorrectionEditorTab:
         if pa_lines:
             lines.extend(["", "PA Preview:"])
             lines.extend(pa_lines)
-        self._set_value_if_exists(self._t("auto_preview_text"), "\n".join(lines))
+        preview_text = "\n".join(lines)
+        self._set_value_if_exists(self._t("auto_preview_text"), preview_text)
+        self._set_value_if_exists(self._t("basic_auto_preview_text"), preview_text)
 
     def refresh_auto_preview(self) -> None:
         session = self._session_required()
@@ -1637,19 +2193,32 @@ class CorrectionEditorTab:
             self.state.set_status("warn", "백업 없음", "복원할 백업 파일이 아직 없습니다.", source="수정/보정")
 
     def apply_responsive_layout(self, content_w: int, content_h: int) -> None:
-        file_w = max(220, min(320, int(content_w * 0.2)))
-        detail_w = max(380, min(540, int(content_w * 0.32)))
-        center_w = max(460, content_w - file_w - detail_w - 30)
-        body_h = max(420, content_h - 60)
-        relay_h = max(220, body_h - 110)
+        file_w = max(250, min(360, int(content_w * 0.24)))
+        detail_w = max(400, min(560, int(content_w * 0.32)))
+        center_w = max(500, content_w - file_w - detail_w - 30)
+        body_h = max(460, content_h - 70)
+        relay_h = max(220, body_h - 260)
 
         for tag, width in ((self._t("file_panel"), file_w), (self._t("center_panel"), center_w), (self._t("detail_panel"), detail_w)):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, width=width, height=body_h)
         self._configure_detail_field_widths(detail_w)
-        for tag in (self._t("game_info_table"), self._t("lineup_table"), self._t("record_table"), self._t("findings_table"), self._t("diff_text"), self._t("history_text"), self._t("auto_preview_text")):
+        for tag in (
+            self._t("game_info_table"),
+            self._t("lineup_table"),
+            self._t("record_table"),
+            self._t("findings_table"),
+            self._t("diff_text"),
+            self._t("history_text"),
+            self._t("auto_preview_text"),
+            self._t("basic_auto_preview_text"),
+        ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, height=body_h - 90)
+        if dpg.does_item_exist(self._t("context_summary_text")):
+            dpg.configure_item(self._t("context_summary_text"), height=120)
+        if dpg.does_item_exist(self._t("context_flow_text")):
+            dpg.configure_item(self._t("context_flow_text"), height=110)
         if dpg.does_item_exist(self._t("relay_tree")):
             dpg.configure_item(self._t("relay_tree"), width=max(180, int(center_w * 0.32)), height=relay_h)
         if dpg.does_item_exist(self._t("relay_events")):
@@ -1686,6 +2255,41 @@ class CorrectionEditorTab:
                     dpg.add_text("Game Files")
                     dpg.add_text("0 files", tag=self._t("file_count"))
                     dpg.add_listbox(tag=self._t("file_list"), items=[], width=-1, num_items=24)
+                    dpg.add_separator()
+                    dpg.add_text("문제 목록")
+                    dpg.add_text("-", tag=self._t("finding_summary"))
+                    with dpg.group(horizontal=True):
+                        dpg.add_combo(
+                            tag=self._t("finding_type_filter"),
+                            items=list(FINDING_TYPE_GROUPS),
+                            default_value="전체",
+                            width=110,
+                            callback=lambda: self.refresh_finding_table(),
+                        )
+                        dpg.add_combo(
+                            tag=self._t("finding_inning_filter"),
+                            items=["전체"],
+                            default_value="전체",
+                            width=70,
+                            callback=lambda: self.refresh_finding_table(),
+                        )
+                        dpg.add_combo(
+                            tag=self._t("finding_half_filter"),
+                            items=["전체", "초", "말"],
+                            default_value="전체",
+                            width=70,
+                            callback=lambda: self.refresh_finding_table(),
+                        )
+                    dpg.add_input_text(
+                        tag=self._t("finding_query"),
+                        hint="문제 유형 / 문구 검색",
+                        width=-1,
+                        callback=lambda: self.refresh_finding_table(),
+                    )
+                    with dpg.child_window(tag=self._t("findings_table"), width=-1, height=220, border=True):
+                        pass
+                    with dpg.collapsing_header(label="검증 변화", default_open=False):
+                        dpg.add_input_text(tag=self._t("finding_delta"), multiline=True, readonly=True, width=-1, height=110)
 
                 with dpg.child_window(tag=self._t("center_panel"), width=840, height=540, border=True):
                     with dpg.tab_bar(tag=self._t("detail_tabs")):
@@ -1711,6 +2315,12 @@ class CorrectionEditorTab:
                                 pass
 
                         with dpg.tab(tag=self._t("relay_tab"), label="Relay"):
+                            dpg.add_text("경기 흐름 / 선택 맥락")
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(label="이전 이벤트", callback=lambda: self.select_relative_event(-1))
+                                dpg.add_button(label="다음 이벤트", callback=lambda: self.select_relative_event(1))
+                            dpg.add_input_text(tag=self._t("context_summary_text"), multiline=True, readonly=True, width=-1, height=120)
+                            dpg.add_input_text(tag=self._t("context_flow_text"), multiline=True, readonly=True, width=-1, height=110)
                             with dpg.group(horizontal=True):
                                 dpg.add_combo(tag=self._t("relay_view_mode"), items=["Event", "PA"], default_value="Event", width=80, callback=lambda: self.refresh_relay_event_table())
                                 dpg.add_input_text(tag=self._t("relay_query"), hint="text / player / ptsPitchId", width=220, callback=lambda: self.refresh_relay_event_table())
@@ -1753,10 +2363,10 @@ class CorrectionEditorTab:
                         with dpg.tab(tag=self._t("validation_tab"), label="검증 결과"):
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="검증 실행", callback=lambda: self.run_validation())
-                                dpg.add_text("-", tag=self._t("finding_summary"))
-                            with dpg.child_window(tag=self._t("findings_table"), width=-1, height=440):
+                                dpg.add_text("문제 목록은 좌측 패널에서 확인하세요.")
+                            with dpg.child_window(tag=self._t("validation_placeholder"), width=-1, height=120):
                                 pass
-                            dpg.add_input_text(tag=self._t("finding_delta"), multiline=True, readonly=True, width=-1, height=120)
+                            dpg.add_input_text(tag=self._t("validation_hint_text"), multiline=True, readonly=True, width=-1, height=120, default_value="좌측 패널의 문제 목록이 기본 진입점입니다.\n고급 모드에서는 이 탭에서 검증을 다시 실행할 수 있습니다.")
 
                         with dpg.tab(tag=self._t("diff_tab"), label="Diff"):
                             dpg.add_input_text(tag=self._t("diff_text"), multiline=True, readonly=True, width=-1, height=440)
@@ -1771,40 +2381,52 @@ class CorrectionEditorTab:
                             dpg.add_input_text(tag=self._t("auto_preview_text"), multiline=True, readonly=True, width=-1, height=440)
 
                 with dpg.child_window(tag=self._t("detail_panel"), width=480, height=540, border=True):
-                    dpg.add_text("Selection Editor")
-                    self._add_labeled_combo(
-                        self._t("editor_mode"),
-                        "editor_mode",
-                        items=["Quick Fix", "Relay Raw", "Roster/Game", "Record"],
-                        default_value="Quick Fix",
-                        callback=lambda: self.apply_editor_mode(),
-                    )
+                    dpg.add_text("액션 패널")
                     with dpg.group(horizontal=True):
-                        dpg.add_button(label="Fill Selected", callback=lambda: self.populate_structured_editors())
-                        dpg.add_button(label="Auto Rebuild", callback=lambda: self.apply_auto_rebuild())
-                        dpg.add_button(label="Validate", callback=lambda: self.run_validation())
-                        dpg.add_button(label="Save", callback=lambda: self.save_current_file())
-                    dpg.add_input_text(tag=self._t("context_summary_text"), multiline=True, readonly=True, width=-1, height=92)
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_game_info"), label="Game Info Editor", default_open=False):
+                        dpg.add_text("작업 모드")
+                        dpg.add_combo(
+                            tag=self._t("editor_mode"),
+                            items=EDITOR_MODES,
+                            default_value=EDITOR_MODES[0],
+                            width=140,
+                            callback=lambda: self.apply_editor_mode(),
+                        )
+                    dpg.add_text("-", tag=self._t("mode_help_text"))
+                    dpg.add_text("-", tag=self._t("action_recommendation_text"))
+                    with dpg.group(tag=self._t("basic_mode_panel")):
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="선택 기반 입력", callback=lambda: self.populate_structured_editors())
+                            dpg.add_button(label="검증 갱신", callback=lambda: self.run_validation())
+                            dpg.add_button(label="저장", callback=lambda: self.save_current_file())
+                        dpg.add_combo(
+                            tag=self._t("action_selector"),
+                            items=[ACTION_LABELS[key] for key in ("add", "missing_pa", "meaning", "split_merge", "preview")],
+                            default_value=ACTION_LABELS["meaning"],
+                            width=-1,
+                            callback=lambda: self.refresh_action_sections(),
+                        )
+                    with dpg.group(tag=self._t("advanced_mode_panel"), show=False):
+                        dpg.add_text("고급 편집 섹션")
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_game_info"), label="Game Info Editor", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in GAME_INFO_FIELDS:
                             if field in BOOLEAN_GAME_INFO_FIELDS:
                                 self._add_labeled_checkbox(self._t(f"game_info_{field}"), field)
                             else:
                                 self._add_labeled_input_text(self._t(f"game_info_{field}"), field)
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_lineup_row"), label="Lineup Row Editor", default_open=False):
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_lineup_row"), label="Lineup Row Editor", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in LINEUP_FIELDS:
                             self._add_labeled_input_text(self._t(f"lineup_{field}"), field)
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_relay_block"), label="Relay Block Editor", default_open=False):
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_relay_block"), label="Relay Block Editor", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in BLOCK_FIELDS:
                             self._add_labeled_input_text(self._t(f"block_{field}"), field)
                         for field in ("homeTeamWinRate", "awayTeamWinRate", "wpaByPlate"):
                             self._add_labeled_input_text(self._t(f"metric_{field}"), f"metric.{field}")
                         dpg.add_button(label="블록 적용", callback=lambda: self.apply_block_editor())
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_relay_event"), label="Relay Event Editor", default_open=False):
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_relay_event"), label="Relay Event Editor", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in EVENT_FIELDS:
                             if field == "text":
                                 self._add_labeled_input_text(self._t(f"event_{field}"), field, multiline=True, height=90)
@@ -1825,39 +2447,106 @@ class CorrectionEditorTab:
                             for field in PLAYER_CHANGE_PLAYER_FIELDS:
                                 self._add_labeled_input_text(self._t(f"{side}_{field}"), f"{side}.{field}")
                         dpg.add_button(label="이벤트 적용", callback=lambda: self.apply_event_editor())
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_structured_add"), label="Structured Add", default_open=True):
-                        self._add_labeled_combo(self._t("add_template_type"), "template_type", items=EVENT_TEMPLATE_TYPES, default_value="pitch")
-                        self._add_labeled_combo(self._t("add_insert_mode"), "insert", items=["before", "after"], default_value="after")
-                        for field in ("batter_id", "batter_name", "pitcher_id", "detail", "text", "pitch_result", "pitch_num", "pts_pitch_id"):
-                            self._add_labeled_input_text(self._t(f"add_{field}"), field)
-                        self._add_labeled_combo(self._t("add_result_type"), "result_type", items=RESULT_TYPES, default_value="out")
-                        self._add_runner_move_editor("add", count=3)
-                        dpg.add_button(label="이벤트 템플릿 추가", callback=lambda: self.insert_structured_event())
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_missing_pa"), label="Missing PA", default_open=True):
-                        self._add_labeled_combo(self._t("pa_insert_mode"), "insert", items=["before", "after"], default_value="before", callback=lambda: self.populate_structured_editors())
+                    dpg.add_separator(parent=self._t("basic_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_structured_add"), label="이벤트 추가", default_open=True, parent=self._t("basic_mode_panel")):
+                        self._add_labeled_combo(
+                            self._t("add_insert_mode"),
+                            "삽입 위치",
+                            items=list(INSERT_MODE_LABELS.values()),
+                            default_value=INSERT_MODE_LABELS["after"],
+                            callback=lambda: self.refresh_add_action_form(),
+                        )
+                        self._add_labeled_combo(
+                            self._t("add_template_type"),
+                            "이벤트 종류",
+                            items=[ADD_TEMPLATE_LABELS[key] for key in BASIC_ADD_TEMPLATE_TYPES],
+                            default_value=ADD_TEMPLATE_LABELS["pitch"],
+                            callback=lambda: self.refresh_add_action_form(),
+                        )
+                        dpg.add_text("-", tag=self._t("add_action_help_text"), wrap=0)
+                        dpg.add_input_text(tag=self._t("add_context_hint"), multiline=True, readonly=True, width=-1, height=110)
+                        with dpg.group(tag=self._t("add_internal_defaults"), show=False):
+                            for field in ("batter_id", "batter_name", "pitcher_id", "pitch_result", "pitch_num"):
+                                dpg.add_input_text(tag=self._t(f"add_{field}"))
+                        with dpg.group(tag=self._t("add_pitch_fields")):
+                            self._add_labeled_combo(
+                                self._t("add_pitch_result_display"),
+                                "투구 결과",
+                                items=list(PITCH_RESULT_LABELS.values()),
+                                default_value=PITCH_RESULT_LABELS[""],
+                                callback=lambda: self.refresh_add_action_form(),
+                            )
+                            self._add_labeled_input_text(self._t("add_pts_pitch_id"), "원본 pitch id (선택)")
+                        with dpg.group(tag=self._t("add_bat_result_fields"), show=False):
+                            self._add_labeled_combo(
+                                self._t("add_result_type"),
+                                "결과 유형",
+                                items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                                default_value=RESULT_TYPE_LABELS["out"],
+                            )
+                            self._add_labeled_input_text(self._t("add_detail"), "결과 설명 (선택)")
+                        dpg.add_text("표시 문구 / 메모 (선택)", tag=self._t("add_text_label"))
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_text(tag=self._t("add_text"), multiline=True, width=-70, height=90)
+                            dpg.add_button(
+                                label="IME",
+                                width=56,
+                                callback=lambda: self._open_native_text_dialog(self._t("add_text"), "이벤트 문구", True),
+                            )
+                        with dpg.group(tag=self._t("add_runner_move_section"), show=False):
+                            dpg.add_text("주자 이동 (필요 시)")
+                            self._add_runner_move_editor("add", count=3, title_prefix="주자")
+                        dpg.add_button(label="이 이벤트 추가", callback=lambda: self.insert_structured_event())
+                    dpg.add_separator(parent=self._t("basic_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_missing_pa"), label="누락 타석 복구", default_open=True, parent=self._t("basic_mode_panel")):
+                        self._add_labeled_combo(
+                            self._t("pa_insert_mode"),
+                            "삽입 위치",
+                            items=list(INSERT_MODE_LABELS.values()),
+                            default_value=INSERT_MODE_LABELS["before"],
+                            callback=lambda: self.populate_structured_editors(),
+                        )
                         for field in ("batter_id", "batter_name", "pitcher_id", "detail", "result_text", "pitch_result", "pitch_num", "pts_pitch_id"):
                             self._add_labeled_input_text(self._t(f"pa_{field}"), field)
-                        self._add_labeled_combo(self._t("pa_result_type"), "result_type", items=RESULT_TYPES, default_value="single")
+                        self._add_labeled_combo(
+                            self._t("pa_result_type"),
+                            "결과 유형",
+                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                            default_value=RESULT_TYPE_LABELS["single"],
+                        )
                         self._add_pa_pitch_editor("pa", count=5)
                         self._add_runner_move_editor("pa", count=3)
                         dpg.add_button(label="누락 타석 삽입", callback=lambda: self.insert_missing_plate_appearance())
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_meaning_edit"), label="Meaning Edit", default_open=True):
+                    dpg.add_separator(parent=self._t("basic_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_meaning_edit"), label="결과 의미 수정", default_open=True, parent=self._t("basic_mode_panel")):
                         for field in ("batter_id", "batter_name", "pitcher_id", "detail", "text", "pitch_result", "pitch_num", "pts_pitch_id"):
                             self._add_labeled_input_text(self._t(f"meaning_{field}"), field)
-                        self._add_labeled_combo(self._t("meaning_result_type"), "result_type", items=RESULT_TYPES, default_value="double")
-                        self._add_labeled_checkbox(self._t("meaning_replace_runner_events"), "replace following runner events", default_value=True)
+                        self._add_labeled_combo(
+                            self._t("meaning_result_type"),
+                            "결과 유형",
+                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                            default_value=RESULT_TYPE_LABELS["double"],
+                        )
+                        self._add_labeled_checkbox(self._t("meaning_replace_runner_events"), "뒤따르는 주자 이벤트 다시 구성", default_value=True)
                         self._add_runner_move_editor("meaning", count=3)
                         dpg.add_button(label="결과 의미 수정", callback=lambda: self.apply_meaning_edit())
-                    dpg.add_separator()
-                    with dpg.collapsing_header(tag=self._t("section_pa_split_merge"), label="PA Split/Merge", default_open=False):
+                    dpg.add_separator(parent=self._t("basic_mode_panel"))
+                    with dpg.collapsing_header(tag=self._t("section_pa_split_merge"), label="타석 분리 / 병합", default_open=False, parent=self._t("basic_mode_panel")):
                         dpg.add_text("Split")
                         for field in ("first_batter_id", "first_batter_name", "first_detail", "first_text", "second_batter_id", "second_batter_name", "second_detail", "second_text"):
                             self._add_labeled_input_text(self._t(f"split_{field}"), field)
-                        self._add_labeled_combo(self._t("split_first_result_type"), "first_result_type", items=RESULT_TYPES, default_value="strikeout")
-                        self._add_labeled_combo(self._t("split_second_result_type"), "second_result_type", items=RESULT_TYPES, default_value="double")
+                        self._add_labeled_combo(
+                            self._t("split_first_result_type"),
+                            "첫 타석 결과",
+                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                            default_value=RESULT_TYPE_LABELS["strikeout"],
+                        )
+                        self._add_labeled_combo(
+                            self._t("split_second_result_type"),
+                            "두 번째 타석 결과",
+                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
+                            default_value=RESULT_TYPE_LABELS["double"],
+                        )
                         self._add_runner_move_editor("split_first", count=3, title_prefix="split_first runner")
                         self._add_runner_move_editor("split_second", count=3, title_prefix="split_second runner")
                         dpg.add_button(label="타석 분리", callback=lambda: self.split_selected_plate_appearance())
@@ -1866,17 +2555,26 @@ class CorrectionEditorTab:
                         self._add_labeled_input_text(self._t("merge_batter_id"), "merged_batter_id")
                         self._add_labeled_input_text(self._t("merge_batter_name"), "merged_batter_name")
                         dpg.add_button(label="이전 타석과 병합", callback=lambda: self.merge_selected_plate_appearance())
-                    dpg.add_separator()
-                    with dpg.group(tag=self._t("record_batter_editor_group")):
+                    dpg.add_separator(parent=self._t("basic_mode_panel"))
+                    with dpg.group(tag=self._t("basic_preview_panel"), parent=self._t("basic_mode_panel")):
+                        dpg.add_text("자동 재계산 미리보기")
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(label="미리보기 갱신", callback=lambda: self.refresh_auto_preview())
+                            dpg.add_button(label="자동 재계산 적용", callback=lambda: self.apply_auto_rebuild())
+                            dpg.add_button(label="Undo", callback=lambda: self.undo())
+                            dpg.add_button(label="Redo", callback=lambda: self.redo())
+                        dpg.add_input_text(tag=self._t("basic_auto_preview_text"), multiline=True, readonly=True, width=-1, height=180)
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.group(tag=self._t("record_batter_editor_group"), parent=self._t("advanced_mode_panel")):
                         dpg.add_text("Record Batter Row")
                         for field in RECORD_BATTER_FIELDS:
                             self._add_labeled_input_text(self._t(f"record_batter_{field}"), field)
-                    with dpg.group(tag=self._t("record_pitcher_editor_group"), show=False):
+                    with dpg.group(tag=self._t("record_pitcher_editor_group"), show=False, parent=self._t("advanced_mode_panel")):
                         dpg.add_text("Record Pitcher Row")
                         for field in RECORD_PITCHER_FIELDS:
                             self._add_labeled_input_text(self._t(f"record_pitcher_{field}"), field)
-                    dpg.add_separator()
-                    with dpg.group(tag=self._t("record_totals_section")):
+                    dpg.add_separator(parent=self._t("advanced_mode_panel"))
+                    with dpg.group(tag=self._t("record_totals_section"), parent=self._t("advanced_mode_panel")):
                         dpg.add_text("Record Batter Totals")
                         self._add_labeled_combo(self._t("record_total_side"), "side", items=["home", "away"], default_value="home")
                         for field in RECORD_BATTER_TOTAL_FIELDS:
