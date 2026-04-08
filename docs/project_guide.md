@@ -101,7 +101,18 @@ python kbo_integrated_gui.py
 - `Ingestion`: manifest 생성, schema 생성, DB 적재, 검증 실행
 - `Replay`: PostgreSQL의 정규화 결과를 불러와 상태를 재생하고 이상 탐지 확인
 
-### 6.1.1 Correction Editor 기본 흐름
+### 6.1.1 Collection 결과 분류
+
+Collection 탭은 수집 결과를 아래 네 가지로 분리해서 다룹니다.
+
+- `success`: `validate_game()`을 통과한 정상 수집본이다. `<save_dir>/<year>/<game_id>.json`에 저장한다.
+- `anomaly`: `lineup / relay / record` 수집과 최소 스키마 JSON 생성은 되었지만 `validate_game()` 이슈 또는 validation 예외가 발생한 경우다. `<save_dir>/_anomalies/<year>/<game_id>.json`에 저장하고 `<save_dir>/logs/collection_anomalies_<timestamp>.jsonl`에 structured log를 남긴다.
+- `failed`: 네트워크 오류, 응답 누락, 파싱 실패, 재시도 초과 등으로 정상 JSON을 만들지 못한 경우다. `<save_dir>/logs/collection_failures_<timestamp>.jsonl`에 기록하며, `Retry failed` 대상은 여기에만 포함한다.
+- `skipped`: 정상 저장 경로에 이미 있고 다시 검증해도 `validate_game()`을 통과하는 파일을 재사용한 경우다.
+
+anomaly 저장본도 정상 저장본과 동일하게 최소 스키마 JSON만 유지하며, Naver 원본 응답 전체를 따로 저장하지 않습니다.
+
+### 6.1.2 Correction Editor 기본 흐름
 
 수정/보정 UI는 "JSON 자유 편집기"가 아니라 "구조화 보정 도구"를 목표로 한다.
 
