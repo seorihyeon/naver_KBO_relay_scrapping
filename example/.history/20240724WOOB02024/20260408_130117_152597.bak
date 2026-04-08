@@ -9306,8 +9306,6 @@
             "seqno": 200,
             "type": 1,
             "text": "양의지 : 1구 볼",
-            "pitchNum": 1,
-            "pitchResult": "B",
             "currentGameState": {
               "homeScore": "0",
               "awayScore": 3,
@@ -9328,7 +9326,9 @@
             },
             "batterRecord": {
               "pcode": "76232"
-            }
+            },
+            "pitchNum": 1,
+            "pitchResult": "B"
           },
           {
             "seqno": 201,
@@ -11451,7 +11451,7 @@
             "pitchNum": 2,
             "pitchResult": "T",
             "ptsPitchId": "240724_195751",
-            "speed": 134,
+            "speed": "134",
             "stuff": "슬라이더",
             "currentGameState": {
               "homeScore": 3,
@@ -11464,7 +11464,7 @@
               "awayError": 0,
               "pitcher": "68220",
               "batter": "50167",
-              "strike": 1,
+              "strike": 3,
               "ball": 1,
               "out": 0,
               "base1": true,
@@ -12259,8 +12259,6 @@
             "seqno": 267,
             "type": 1,
             "text": "이유찬 : 1구 타격",
-            "pitchNum": 1,
-            "pitchResult": "X",
             "currentGameState": {
               "homeScore": 3,
               "awayScore": 3,
@@ -12281,13 +12279,14 @@
             },
             "batterRecord": {
               "pcode": "67207"
-            }
+            },
+            "pitchNum": 1,
+            "pitchResult": "X"
           },
           {
             "seqno": 268,
             "type": 13,
             "text": "이유찬 : 3루수 땅볼 아웃 (3루수->1루수 송구아웃)",
-            "pitchNum": 1,
             "currentGameState": {
               "homeScore": 3,
               "awayScore": 3,
@@ -12308,7 +12307,8 @@
             },
             "batterRecord": {
               "pcode": "67207"
-            }
+            },
+            "pitchNum": 1
           }
         ],
         "ptsOptions": []
@@ -13572,7 +13572,7 @@
               "awayError": 0,
               "pitcher": "68220",
               "batter": "78135",
-              "strike": 0,
+              "strike": 1,
               "ball": 0,
               "out": 2,
               "base1": true,
@@ -13600,7 +13600,7 @@
               "awayError": 0,
               "pitcher": "68220",
               "batter": "78135",
-              "strike": 1,
+              "strike": 2,
               "ball": 0,
               "out": 2,
               "base1": true,
@@ -13631,7 +13631,7 @@
               "awayError": 0,
               "pitcher": "68220",
               "batter": "78135",
-              "strike": 1,
+              "strike": 2,
               "ball": 1,
               "out": 2,
               "base1": true,
@@ -13662,7 +13662,7 @@
               "awayError": 0,
               "pitcher": "68220",
               "batter": "78135",
-              "strike": 1,
+              "strike": 2,
               "ball": 2,
               "out": 2,
               "base1": true,
@@ -13693,7 +13693,7 @@
               "awayError": 0,
               "pitcher": "68220",
               "batter": "78135",
-              "strike": 1,
+              "strike": 2,
               "ball": 3,
               "out": 2,
               "base1": true,
@@ -17368,8 +17368,6 @@
             "seqno": 387,
             "type": 1,
             "text": "이주형 : 1구 스트라이크",
-            "pitchNum": 1,
-            "pitchResult": "S",
             "currentGameState": {
               "homeScore": 4,
               "awayScore": 3,
@@ -17390,7 +17388,9 @@
             },
             "batterRecord": {
               "pcode": "50167"
-            }
+            },
+            "pitchNum": 1,
+            "pitchResult": "S"
           },
           {
             "seqno": 388,
@@ -17857,7 +17857,6 @@
             "seqno": 400,
             "type": 13,
             "text": "정수빈 : 정수빈 : 유격수 2루타",
-            "pitchNum": null,
             "stuff": "",
             "currentGameState": {
               "homeScore": 4,
@@ -17879,7 +17878,8 @@
             },
             "batterRecord": {
               "pcode": "79231"
-            }
+            },
+            "pitchNum": null
           }
         ],
         "ptsOptions": [
@@ -22304,8 +22304,6 @@
             "seqno": 503,
             "type": 1,
             "text": "정수빈 : 3구 타격",
-            "pitchNum": 3,
-            "pitchResult": "X",
             "currentGameState": {
               "homeScore": 10,
               "awayScore": 4,
@@ -22326,13 +22324,14 @@
             },
             "batterRecord": {
               "pcode": "79231"
-            }
+            },
+            "pitchNum": 3,
+            "pitchResult": "X"
           },
           {
             "seqno": 504,
             "type": 13,
             "text": "정수빈 : 우익수 앞 1루타",
-            "pitchNum": null,
             "currentGameState": {
               "homeScore": 10,
               "awayScore": 4,
@@ -22353,7 +22352,8 @@
             },
             "batterRecord": {
               "pcode": "79231"
-            }
+            },
+            "pitchNum": null
           }
         ],
         "ptsOptions": [
@@ -24432,7 +24432,6 @@
             "seqno": 554,
             "type": 13,
             "text": "도슨 : 삼진 아웃",
-            "pitchNum": null,
             "currentGameState": {
               "homeScore": 10,
               "awayScore": 6,
@@ -24453,7 +24452,8 @@
             },
             "batterRecord": {
               "pcode": "53327"
-            }
+            },
+            "pitchNum": null
           }
         ],
         "ptsOptions": [

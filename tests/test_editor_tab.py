@@ -59,6 +59,7 @@ def build_loaded_tab(tmp_path: Path, payload: dict, filename: str = "20260406SMO
     return tab, json_path
 
 
+
 def make_intro_payload() -> dict:
     payload = make_smoke_payload()
     payload["lineup"]["home_starter"] = [{"playerCode": "HP", "playerName": "Home Pitcher", "position": "1", "positionName": "P"}]
@@ -343,8 +344,6 @@ def make_basic_split_payload() -> dict:
         },
     ]
     return payload
-
-
 def make_basic_split_failure_payload() -> dict:
     payload = make_intro_payload()
     payload["lineup"]["away_starter"] = [

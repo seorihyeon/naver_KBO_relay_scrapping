@@ -5,7 +5,7 @@ from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
-from gui.components import FileSelector, LogPanel, ProgressPanel, SummaryCard
+from gui.components import FileSelector, HorizontalToolbar, LogPanel, ProgressPanel, SummaryCard
 from gui.ingestion_service import DatabaseService, IngestionService
 from gui.jobs import JobEvent, JobHandle, JobRunner, JobSnapshot
 from gui.state import AppState
@@ -54,6 +54,11 @@ class IngestionTab:
         self.progress_panel = ProgressPanel(self.namespace.child("progress"), default_message="No ingestion job running")
         self.log_panel = LogPanel(self.namespace.child("logs"), height=240, title="Ingestion job log")
         self.summary_card = SummaryCard(self.namespace.child("summary"), title="Last ingestion result", default_text="No run yet")
+        self.search_toolbar = HorizontalToolbar(self._tag("search_toolbar"))
+        self.selector_toolbar = HorizontalToolbar(self._tag("selector_toolbar"))
+        self.manifest_toolbar = HorizontalToolbar(self._tag("manifest_toolbar"))
+        self.load_toolbar = HorizontalToolbar(self._tag("load_toolbar"))
+        self.worker_toolbar = HorizontalToolbar(self._tag("worker_toolbar"))
         self.current_job: JobHandle | None = None
 
     def _tag(self, name: str) -> str:
@@ -64,25 +69,36 @@ class IngestionTab:
             dpg.add_text("Manage schema creation, manifest builds, ingestion, validation, and sample-loop jobs.")
             dpg.add_text("DB connection", color=(180, 180, 180))
             dpg.add_text("Disconnected", tag=self._tag("connection_status"), color=(255, 195, 90))
-            with dpg.group(horizontal=True):
-                dpg.add_input_text(tag=self._tag("game_search"), width=240, hint="Search games")
-                dpg.add_button(label="Refresh game list", callback=lambda: self.refresh_games())
+
+            search_row = self.search_toolbar.build()
+            dpg.add_input_text(tag=self._tag("game_search"), width=240, hint="Search games", parent=search_row)
+            dpg.add_button(label="Refresh game list", parent=search_row, callback=lambda: self.refresh_games())
+
             self.data_dir_selector.build()
             self.manifest_selector.build()
-            with dpg.group(horizontal=True):
+
+            selector_row = self.selector_toolbar.build()
+            with dpg.group(parent=selector_row):
                 self.schema_selector.build()
+            with dpg.group(parent=selector_row):
                 self.report_dir_selector.build()
-            with dpg.group(horizontal=True):
-                dpg.add_button(tag=self._tag("manifest_button"), label="Build manifest", callback=lambda: self.start_manifest_job())
-                dpg.add_button(tag=self._tag("schema_button"), label="Create schema", callback=lambda: self.start_schema_job(reset_first=False))
-                dpg.add_button(tag=self._tag("reset_schema_button"), label="Reset + schema", callback=lambda: self.start_schema_job(reset_first=True))
-            with dpg.group(horizontal=True):
-                dpg.add_button(tag=self._tag("load_manifest_button"), label="Load manifest", callback=lambda: self.start_manifest_ingest_job())
-                dpg.add_button(tag=self._tag("load_dir_button"), label="Load directory", callback=lambda: self.start_directory_ingest_job())
-                dpg.add_button(tag=self._tag("validate_button"), label="Validate", callback=lambda: self.start_validate_job())
-                dpg.add_button(tag=self._tag("sample_loop_button"), label="Sample loop", callback=lambda: self.start_sample_loop_job())
-                dpg.add_button(tag=self._tag("cancel_button"), label="Cancel", enabled=False, callback=lambda: self.cancel_job())
-            dpg.add_input_int(tag=self._tag("workers"), width=80, default_value=1, min_value=1, max_value=8)
+
+            manifest_row = self.manifest_toolbar.build()
+            dpg.add_button(tag=self._tag("manifest_button"), label="Build manifest", parent=manifest_row, callback=lambda: self.start_manifest_job())
+            dpg.add_button(tag=self._tag("schema_button"), label="Create schema", parent=manifest_row, callback=lambda: self.start_schema_job(reset_first=False))
+            dpg.add_button(tag=self._tag("reset_schema_button"), label="Reset + schema", parent=manifest_row, callback=lambda: self.start_schema_job(reset_first=True))
+
+            load_row = self.load_toolbar.build()
+            dpg.add_button(tag=self._tag("load_manifest_button"), label="Load manifest", parent=load_row, callback=lambda: self.start_manifest_ingest_job())
+            dpg.add_button(tag=self._tag("load_dir_button"), label="Load directory", parent=load_row, callback=lambda: self.start_directory_ingest_job())
+            dpg.add_button(tag=self._tag("validate_button"), label="Validate", parent=load_row, callback=lambda: self.start_validate_job())
+            dpg.add_button(tag=self._tag("sample_loop_button"), label="Sample loop", parent=load_row, callback=lambda: self.start_sample_loop_job())
+            dpg.add_button(tag=self._tag("cancel_button"), label="Cancel", parent=load_row, enabled=False, callback=lambda: self.cancel_job())
+
+            worker_row = self.worker_toolbar.build()
+            dpg.add_text("Workers", parent=worker_row)
+            dpg.add_input_int(tag=self._tag("workers"), width=80, default_value=1, min_value=1, max_value=8, parent=worker_row)
+
             self.progress_panel.build()
             self.summary_card.build()
             dpg.add_text("Recent report path")
@@ -91,6 +107,9 @@ class IngestionTab:
 
     def apply_responsive_layout(self, content_w: int, content_h: int) -> None:
         available_w = max(720, int(content_w) - 36)
+        toolbar_width = max(220, available_w)
+        for toolbar in (self.search_toolbar, self.selector_toolbar, self.manifest_toolbar, self.load_toolbar, self.worker_toolbar):
+            toolbar.set_width(toolbar_width)
         selector_w = max(240, min(520, available_w - 180))
         self.data_dir_selector.set_width(selector_w)
         self.manifest_selector.set_width(selector_w)

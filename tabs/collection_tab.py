@@ -8,7 +8,7 @@ from typing import Callable
 import dearpygui.dearpygui as dpg
 
 from gui.collection_service import CollectionRequest, CollectionService, CollectionTarget
-from gui.components import DatePicker, FileSelector, LogPanel, ProgressPanel, SummaryCard
+from gui.components import DatePicker, FileSelector, HorizontalToolbar, LogPanel, ProgressPanel, SummaryCard
 from gui.jobs import JobEvent, JobHandle, JobRunner, JobSnapshot
 from gui.state import AppState
 from gui.tags import TagNamespace
@@ -49,6 +49,12 @@ class CollectionTab:
         self.progress_panel = ProgressPanel(self.namespace.child("progress"), default_message="Ready to collect")
         self.log_panel = LogPanel(self.namespace.child("logs"), height=240, title="Collection job log")
         self.summary_card = SummaryCard(self.namespace.child("summary"), title="Last run summary", default_text="No run yet")
+        self.mode_toolbar = HorizontalToolbar(self._tag("mode_toolbar"))
+        self.period_toolbar = HorizontalToolbar(self._tag("period_group"))
+        self.single_toolbar = HorizontalToolbar(self._tag("single_group"))
+        self.season_toolbar = HorizontalToolbar(self._tag("season_group"))
+        self.options_toolbar = HorizontalToolbar(self._tag("options_toolbar"))
+        self.action_toolbar = HorizontalToolbar(self._tag("action_toolbar"))
         self.current_job: JobHandle | None = None
         self.last_failed_targets: list[CollectionTarget] = []
 
@@ -62,54 +68,59 @@ class CollectionTab:
         self.view_model.single_date = today
         with dpg.tab(label=self.label, parent=parent, tag=self._tag("tab")):
             dpg.add_text("Collect KBO game JSON from Naver and save validated files.")
-            with dpg.group(horizontal=True):
-                dpg.add_text("Mode")
-                dpg.add_radio_button(
-                    items=["Period", "Single Date", "Season"],
-                    tag=self._tag("mode"),
-                    default_value="Period",
-                    horizontal=True,
-                    callback=lambda: self._apply_mode_from_ui(),
-                )
 
-            with dpg.group(horizontal=True, tag=self._tag("period_group")):
-                dpg.add_text("Start")
-                dpg.add_input_text(tag=self._tag("start_date"), width=120, readonly=True, default_value=today)
-                dpg.add_button(label="Pick", width=48, callback=lambda: self.date_picker.open(self._tag("start_date")))
-                dpg.add_button(label="Today", width=56, callback=lambda: dpg.set_value(self._tag("start_date"), today))
-                dpg.add_text("End")
-                dpg.add_input_text(tag=self._tag("end_date"), width=120, readonly=True, default_value=today)
-                dpg.add_button(label="Pick", width=48, callback=lambda: self.date_picker.open(self._tag("end_date")))
-                dpg.add_button(label="Today", width=56, callback=lambda: dpg.set_value(self._tag("end_date"), today))
+            mode_row = self.mode_toolbar.build()
+            dpg.add_text("Mode", parent=mode_row)
+            dpg.add_radio_button(
+                items=["Period", "Single Date", "Season"],
+                tag=self._tag("mode"),
+                default_value="Period",
+                horizontal=True,
+                parent=mode_row,
+                callback=lambda: self._apply_mode_from_ui(),
+            )
 
-            with dpg.group(horizontal=True, tag=self._tag("single_group"), show=False):
-                dpg.add_text("Date")
-                dpg.add_input_text(tag=self._tag("single_date"), width=120, readonly=True, default_value=today)
-                dpg.add_button(label="Pick", width=48, callback=lambda: self.date_picker.open(self._tag("single_date")))
-                dpg.add_button(label="Today", width=56, callback=lambda: dpg.set_value(self._tag("single_date"), today))
+            period_row = self.period_toolbar.build()
+            dpg.add_text("Start", parent=period_row)
+            dpg.add_input_text(tag=self._tag("start_date"), width=120, readonly=True, default_value=today, parent=period_row)
+            dpg.add_button(label="Pick", width=48, parent=period_row, callback=lambda: self.date_picker.open(self._tag("start_date")))
+            dpg.add_button(label="Today", width=56, parent=period_row, callback=lambda: dpg.set_value(self._tag("start_date"), today))
+            dpg.add_text("End", parent=period_row)
+            dpg.add_input_text(tag=self._tag("end_date"), width=120, readonly=True, default_value=today, parent=period_row)
+            dpg.add_button(label="Pick", width=48, parent=period_row, callback=lambda: self.date_picker.open(self._tag("end_date")))
+            dpg.add_button(label="Today", width=56, parent=period_row, callback=lambda: dpg.set_value(self._tag("end_date"), today))
 
-            with dpg.group(horizontal=True, tag=self._tag("season_group"), show=False):
-                dpg.add_text("Season year")
-                dpg.add_combo(
-                    tag=self._tag("season_year"),
-                    width=120,
-                    items=[str(year) for year in range(2020, dt.date.today().year + 1)],
-                    default_value=str(dt.date.today().year),
-                )
+            single_row = self.single_toolbar.build()
+            dpg.configure_item(self.single_toolbar.tag, show=False)
+            dpg.add_text("Date", parent=single_row)
+            dpg.add_input_text(tag=self._tag("single_date"), width=120, readonly=True, default_value=today, parent=single_row)
+            dpg.add_button(label="Pick", width=48, parent=single_row, callback=lambda: self.date_picker.open(self._tag("single_date")))
+            dpg.add_button(label="Today", width=56, parent=single_row, callback=lambda: dpg.set_value(self._tag("single_date"), today))
+
+            season_row = self.season_toolbar.build()
+            dpg.configure_item(self.season_toolbar.tag, show=False)
+            dpg.add_text("Season year", parent=season_row)
+            dpg.add_combo(
+                tag=self._tag("season_year"),
+                width=120,
+                items=[str(year) for year in range(2020, dt.date.today().year + 1)],
+                default_value=str(dt.date.today().year),
+                parent=season_row,
+            )
 
             self.save_dir_selector.build()
 
-            with dpg.group(horizontal=True):
-                dpg.add_text("Timeout")
-                dpg.add_input_int(tag=self._tag("timeout"), width=80, default_value=8, min_value=2, max_value=60)
-                dpg.add_text("Retry")
-                dpg.add_input_int(tag=self._tag("retry"), width=80, default_value=3, min_value=1, max_value=20)
-                dpg.add_checkbox(tag=self._tag("headless"), label="Headless browser", default_value=True)
+            options_row = self.options_toolbar.build()
+            dpg.add_text("Timeout", parent=options_row)
+            dpg.add_input_int(tag=self._tag("timeout"), width=80, default_value=8, min_value=2, max_value=60, parent=options_row)
+            dpg.add_text("Retry", parent=options_row)
+            dpg.add_input_int(tag=self._tag("retry"), width=80, default_value=3, min_value=1, max_value=20, parent=options_row)
+            dpg.add_checkbox(tag=self._tag("headless"), label="Headless browser", default_value=True, parent=options_row)
 
-            with dpg.group(horizontal=True):
-                dpg.add_button(tag=self._tag("start_button"), label="Start collection", width=140, callback=lambda: self.start_collection())
-                dpg.add_button(tag=self._tag("cancel_button"), label="Cancel", width=100, callback=lambda: self.cancel_collection(), enabled=False)
-                dpg.add_button(tag=self._tag("retry_failed_button"), label="Retry failed", width=120, callback=lambda: self.retry_failed_collection(), enabled=False)
+            action_row = self.action_toolbar.build()
+            dpg.add_button(tag=self._tag("start_button"), label="Start collection", width=140, parent=action_row, callback=lambda: self.start_collection())
+            dpg.add_button(tag=self._tag("cancel_button"), label="Cancel", width=100, parent=action_row, callback=lambda: self.cancel_collection(), enabled=False)
+            dpg.add_button(tag=self._tag("retry_failed_button"), label="Retry failed", width=120, parent=action_row, callback=lambda: self.retry_failed_collection(), enabled=False)
 
             self.progress_panel.build()
             self.summary_card.build()
@@ -137,13 +148,18 @@ class CollectionTab:
         mode_value = dpg.get_value(self._tag("mode"))
         mode_map = {"Period": "period", "Single Date": "single", "Season": "season"}
         self.view_model.mode = mode_map.get(mode_value, "period")
-        dpg.configure_item(self._tag("period_group"), show=self.view_model.mode == "period")
-        dpg.configure_item(self._tag("single_group"), show=self.view_model.mode == "single")
-        dpg.configure_item(self._tag("season_group"), show=self.view_model.mode == "season")
+        dpg.configure_item(self.period_toolbar.tag, show=self.view_model.mode == "period")
+        dpg.configure_item(self.single_toolbar.tag, show=self.view_model.mode == "single")
+        dpg.configure_item(self.season_toolbar.tag, show=self.view_model.mode == "season")
         self.request_layout()
 
     def apply_responsive_layout(self, content_w: int, content_h: int) -> None:
         available_w = max(720, int(content_w) - 36)
+        toolbar_width = max(220, available_w)
+        for toolbar in (self.mode_toolbar, self.period_toolbar, self.single_toolbar, self.season_toolbar, self.options_toolbar, self.action_toolbar):
+            toolbar.set_width(toolbar_width)
+        if dpg.does_item_exist(self._tag("root_dir")):
+            dpg.configure_item(self._tag("root_dir"), width=max(220, min(420, int(available_w * 0.3))))
         save_dir_w = max(220, min(520, available_w - 180))
         log_h = max(120, int(content_h) - 460)
         self.save_dir_selector.set_width(save_dir_w)

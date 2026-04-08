@@ -6,6 +6,7 @@ from typing import Any
 import dearpygui.dearpygui as dpg
 
 from dpg_utils import prompt_native_text
+from gui.components import HorizontalToolbar
 from gui.state import AppState
 from src.kbo_ingest.correction_engine import (
     RESULT_TYPES,
@@ -146,6 +147,9 @@ RECORD_SCOPE_ITEMS = ["batter:home", "batter:away", "pitcher:home", "pitcher:awa
 
 
 class CorrectionEditorTab:
+    key = "editor"
+    label = "수정/보정"
+
     def __init__(self, state: AppState):
         self.state = state
         self.session: GameEditorSession | None = None
@@ -164,6 +168,9 @@ class CorrectionEditorTab:
         self.split_preview: dict[str, Any] | None = None
         self._split_entry_options: list[dict[str, Any]] = []
         self._last_validation_signatures: set[str] = set()
+        self.header_toolbar = HorizontalToolbar(self._t("header_toolbar"))
+        self.loaded_toolbar = HorizontalToolbar(self._t("loaded_toolbar"))
+        self.status_toolbar = HorizontalToolbar(self._t("status_toolbar"))
 
     def _t(self, name: str) -> str:
         return f"editor_{name}"
@@ -2348,15 +2355,25 @@ class CorrectionEditorTab:
             self.state.set_status("warn", "백업 없음", "복원할 백업 파일이 아직 없습니다.", source="수정/보정")
 
     def apply_responsive_layout(self, content_w: int, content_h: int) -> None:
-        file_w = max(250, min(360, int(content_w * 0.24)))
-        detail_w = max(400, min(560, int(content_w * 0.32)))
-        center_w = max(500, content_w - file_w - detail_w - 30)
-        body_h = max(460, content_h - 70)
+        available_w = max(700, int(content_w) - 36)
+        file_w = max(250, min(360, int(available_w * 0.24)))
+        detail_w = max(400, min(560, int(available_w * 0.32)))
+        center_w = max(500, available_w - file_w - detail_w - 30)
+        body_h = max(460, int(content_h) - 120)
         relay_h = max(220, body_h - 260)
+
+        self.header_toolbar.set_width(available_w)
+        self.loaded_toolbar.set_width(available_w)
+        self.status_toolbar.set_width(available_w)
+        if dpg.does_item_exist(self._t("root_dir")):
+            dpg.configure_item(self._t("root_dir"), width=max(220, min(420, int(available_w * 0.3))))
+        if dpg.does_item_exist(self._t("search")):
+            dpg.configure_item(self._t("search"), width=max(160, min(280, int(available_w * 0.2))))
 
         for tag, width in ((self._t("file_panel"), file_w), (self._t("center_panel"), center_w), (self._t("detail_panel"), detail_w)):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, width=width, height=body_h)
+
         self._configure_detail_field_widths(detail_w)
         for tag in (
             self._t("game_info_table"),
@@ -2381,11 +2398,12 @@ class CorrectionEditorTab:
 
     def build(self, parent: str) -> None:
         with dpg.tab(label="수정/보정", parent=parent):
-            with dpg.group(horizontal=True):
-                dpg.add_text("Root")
-                dpg.add_input_text(tag=self._t("root_dir"), width=320, default_value=self.state.default_data_dir)
-                dpg.add_text("Search")
-                dpg.add_input_text(tag=self._t("search"), width=220, callback=lambda: self.refresh_file_list())
+            header_row = self.header_toolbar.build()
+            dpg.add_text("Root", parent=header_row)
+            dpg.add_input_text(tag=self._t("root_dir"), width=320, default_value=self.state.default_data_dir, parent=header_row)
+            dpg.add_text("Search", parent=header_row)
+            dpg.add_input_text(tag=self._t("search"), width=220, parent=header_row, callback=lambda: self.refresh_file_list())
+            with dpg.group(horizontal=True, parent=header_row):
                 dpg.add_button(label="목록 새로고침", callback=lambda: self.refresh_file_list())
                 dpg.add_button(label="파일 열기", callback=lambda: self.load_selected_file())
                 dpg.add_button(label="저장", callback=lambda: self.save_current_file())
@@ -2395,17 +2413,19 @@ class CorrectionEditorTab:
                 dpg.add_button(label="세션 되돌리기", callback=lambda: self.revert_session())
                 dpg.add_button(label="백업 복원", callback=lambda: self.restore_backup())
 
-            with dpg.group(horizontal=True):
+            loaded_row = self.loaded_toolbar.build()
+            with dpg.group(horizontal=True, parent=loaded_row):
                 dpg.add_text("Loaded")
                 dpg.add_text("-", tag=self._t("loaded_file"))
-            with dpg.group(horizontal=True):
+            status_row = self.status_toolbar.build()
+            with dpg.group(horizontal=True, parent=status_row):
                 dpg.add_text("Save status")
                 dpg.add_text("-", tag=self._t("save_status"))
                 dpg.add_spacer(width=12)
                 dpg.add_text("Selection")
                 dpg.add_text("선택된 항목 없음", tag=self._t("selection_summary"))
 
-            with dpg.group(horizontal=True):
+            with dpg.group(horizontal=True, tag=self._t("workspace")):
                 with dpg.child_window(tag=self._t("file_panel"), width=260, height=540, border=True):
                     dpg.add_text("Game Files")
                     dpg.add_text("0 files", tag=self._t("file_count"))

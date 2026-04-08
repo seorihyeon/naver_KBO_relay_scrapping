@@ -5,7 +5,7 @@ from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
-from gui.components import GameSelector, NavigatorPanel, SummaryCard, WarningTable
+from gui.components import GameSelector, HorizontalToolbar, NavigatorPanel, SummaryCard, WarningTable
 from gui.components.warning_table import WarningRow
 from gui.replay import (
     FieldOverlayRenderer,
@@ -81,6 +81,7 @@ class ReplayTab:
         self.strike_zone_h = 260
         self.field_renderer = FieldOverlayRenderer(self._tag("field_drawlist"), self.canvas_w, self.canvas_h)
         self.zone_renderer = StrikeZoneRenderer(self._tag("zone_drawlist"), self.strike_zone_w, self.strike_zone_h, self._tag("zone_meta"))
+        self.control_toolbar = HorizontalToolbar(self._tag("control_toolbar"))
         self.state.subscribe("games_changed", self._on_games_changed)
 
     def _tag(self, name: str) -> str:
@@ -89,9 +90,10 @@ class ReplayTab:
     def build(self, parent: str) -> None:
         with dpg.tab(label=self.label, parent=parent, tag=self._tag("tab")):
             with dpg.child_window(tag=self._tag("control_panel"), border=True, width=-1, height=self.CONTROL_PANEL_HEIGHT, no_scrollbar=True):
-                self.game_selector.build(on_load=lambda: self.load_selected_game())
-                dpg.add_same_line()
-                dpg.add_button(label="Refresh warnings", width=120, callback=lambda: self.refresh_warning_panel())
+                control_row = self.control_toolbar.build()
+                with dpg.group(parent=control_row):
+                    self.game_selector.build(on_load=lambda: self.load_selected_game())
+                dpg.add_button(label="Refresh warnings", width=120, parent=control_row, callback=lambda: self.refresh_warning_panel())
 
             dpg.add_spacer(height=self.PANEL_GAP)
             with dpg.child_window(tag=self._tag("stage_panel"), width=-1, height=400, border=True, no_scrollbar=True):
@@ -131,7 +133,8 @@ class ReplayTab:
             return
         layout = self.compute_layout_metrics(content_w, content_h)
         dpg.configure_item(self._tag("control_panel"), width=layout.content_w, height=self.CONTROL_PANEL_HEIGHT)
-        self.game_selector.set_width(max(260, layout.content_w - 280))
+        self.control_toolbar.set_width(layout.content_w)
+        self.game_selector.set_width(max(220, layout.content_w - 250))
         dpg.configure_item(self._tag("stage_panel"), width=layout.content_w, height=layout.stage_h)
         dpg.configure_item(self._tag("left_column"), width=layout.side_w, height=-1)
         dpg.configure_item(self._tag("center_panel"), width=layout.canvas_w, height=-1)
