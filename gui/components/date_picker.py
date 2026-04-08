@@ -34,7 +34,7 @@ class DatePicker:
         return self.namespace("grid")
 
     def build(self) -> None:
-        with dpg.window(tag=self.modal_tag, label="Pick date", modal=True, show=False, width=self.width, height=self.height):
+        with dpg.window(tag=self.modal_tag, label="날짜 선택", modal=True, show=False, width=self.width, height=self.height):
             with dpg.group(horizontal=True):
                 dpg.add_button(label="<", width=30, callback=lambda: self.prev_month())
                 dpg.add_text("", tag=self.header_tag)
@@ -43,7 +43,7 @@ class DatePicker:
             with dpg.child_window(tag=self.grid_tag, autosize_x=True, autosize_y=True):
                 pass
             dpg.add_separator()
-            dpg.add_button(label="Close", width=60, callback=lambda: dpg.configure_item(self.modal_tag, show=False))
+            dpg.add_button(label="닫기", width=60, callback=lambda: dpg.configure_item(self.modal_tag, show=False))
         self.render()
 
     def open(self, target_tag: str) -> None:
@@ -63,7 +63,7 @@ class DatePicker:
         dpg.set_value(self.header_tag, f"{self.year:04d}-{self.month:02d}")
         dpg.delete_item(self.grid_tag, children_only=True)
         with dpg.group(horizontal=True, parent=self.grid_tag):
-            for day_name in ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]:
+            for day_name in ["월", "화", "수", "목", "금", "토", "일"]:
                 dpg.add_button(label=day_name, width=34, height=20, enabled=False)
         cal = calendar.Calendar(firstweekday=0)
         today = dt.date.today()

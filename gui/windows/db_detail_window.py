@@ -13,7 +13,7 @@ class DbDetailWindow:
     def build(self, *, default_dsn: str, on_connect_db: Callable[[], None], on_close: Callable[[], None]) -> None:
         with dpg.window(
             tag=GLOBAL_TAGS.db_detail_window,
-            label="DB Details",
+            label="DB 상세",
             show=False,
             no_resize=True,
             no_move=True,
@@ -22,8 +22,8 @@ class DbDetailWindow:
             with dpg.group(horizontal=True):
                 dpg.add_text("DSN")
                 dpg.add_input_text(tag=GLOBAL_TAGS.dsn_input, width=720, default_value=default_dsn)
-                dpg.add_button(label="Connect", callback=lambda: on_connect_db())
-                dpg.add_button(label="Close", callback=lambda: on_close())
+                dpg.add_button(label="연결", callback=lambda: on_connect_db())
+                dpg.add_button(label="닫기", callback=lambda: on_close())
             dpg.add_spacer(height=6)
-            dpg.add_text("Status log")
+            dpg.add_text("상태 로그")
             dpg.add_input_text(tag=GLOBAL_TAGS.status_detail_text, multiline=True, readonly=True, width=-1, height=128)

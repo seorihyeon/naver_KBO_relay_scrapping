@@ -12,7 +12,7 @@ from gui.tags import TagNamespace
 class LogPanel:
     namespace: TagNamespace
     height: int = 240
-    title: str = "Logs"
+    title: str = "로그"
     max_entries: int = 400
     _entries: list[JobLogEntry] = field(default_factory=list)
 

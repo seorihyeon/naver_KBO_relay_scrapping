@@ -89,7 +89,7 @@ class JobContext:
 
     def check_cancelled(self) -> None:
         if self.is_cancelled():
-            raise JobCancelledError("job cancelled")
+            raise JobCancelledError("작업이 취소되었습니다")
 
 
 JobListener = Callable[[JobEvent, JobSnapshot], None]
@@ -177,7 +177,7 @@ class JobRunner:
         if event.kind == "cancelled":
             snapshot.status = "cancelled"
             snapshot.finished_at = dt.datetime.now()
-            snapshot.latest_message = "Cancelled"
+            snapshot.latest_message = "취소됨"
             return
         if event.kind == "failed":
             snapshot.status = "failed"

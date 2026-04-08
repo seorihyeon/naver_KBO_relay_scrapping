@@ -83,9 +83,9 @@ def prompt_native_text(*, title: str, initial_value: str = "", multiline: bool =
         def on_cancel(_event=None):
             dialog.destroy()
 
-        ok_btn = tk.Button(button_row, text="OK", width=10, command=on_ok)
+        ok_btn = tk.Button(button_row, text="확인", width=10, command=on_ok)
         ok_btn.pack(side="right")
-        cancel_btn = tk.Button(button_row, text="Cancel", width=10, command=on_cancel)
+        cancel_btn = tk.Button(button_row, text="취소", width=10, command=on_cancel)
         cancel_btn.pack(side="right", padx=(0, 8))
 
         dialog.bind("<Control-Return>", on_ok)

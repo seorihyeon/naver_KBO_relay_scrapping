@@ -84,8 +84,8 @@ class ReplayStateBuilder:
 
     def format_inning_label(self, inning_no: int | None, half: str | None) -> str:
         if inning_no is None:
-            return "Unknown inning"
-        return f"{inning_no}{'T' if half == 'top' else 'B'}"
+            return "이닝 미상"
+        return f"{inning_no}{'초' if half == 'top' else '말'}"
 
     def cm_to_ft(self, cm_value: float | None) -> float | None:
         if cm_value is None:
@@ -220,9 +220,9 @@ class ReplayStateBuilder:
             batter_name=batter_name,
             pitcher_name=pitcher_name,
             fielding_team_id=fielding_team_id,
-            fielding_team_name=self.get_team_name(fielding_team_id, "FIELD"),
+            fielding_team_name=self.get_team_name(fielding_team_id, "수비"),
             batting_team_id=batting_team_id,
-            batting_team_name=self.get_team_name(batting_team_id, "BAT"),
+            batting_team_name=self.get_team_name(batting_team_id, "공격"),
             lineup=lineup,
             batter_side=self.resolve_batter_stance(batter_id, event=event, pitch=pitch),
         )
@@ -265,7 +265,7 @@ class ReplayStateBuilder:
             candidate = (self.events[candidate_idx].text or "").strip()
             if self.is_meaningful_pa_text(candidate):
                 return candidate
-        return anchor_text or "Plate appearance in progress"
+        return anchor_text or "타석 진행 중"
 
     def normalize_runner_name(self, name: str | None) -> str | None:
         text = str(name or "").strip()

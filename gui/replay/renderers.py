@@ -180,7 +180,8 @@ class FieldOverlayRenderer:
         self.draw_background()
         self._draw_score_bug(event, state, participants, away_team_name, home_team_name, pitch_position, total_pitches, event_position, total_events)
         self._draw_players(participants, state)
-        header_text = f"{event.inning_no or '-'} {'T' if event.half == 'top' else 'B'} | pitch {pitch_position}/{total_pitches} | pa {pa_position}/{total_pas}"
+        half_label = "초" if event.half == "top" else "말"
+        header_text = f"{event.inning_no or '-'}회 {half_label} | 투구 {pitch_position}/{total_pitches} | 타석 {pa_position}/{total_pas}"
         self.draw_left_chip(header_text, (0.22, 0.04), fill=(28, 33, 35, 220), font_size=14)
 
     def _draw_score_bug(
@@ -205,9 +206,9 @@ class FieldOverlayRenderer:
         small_font = max(11, int(self.scale_px(12)))
         dpg.draw_text((box_x0 + self.scale_px(10), box_y0 + self.scale_px(6)), f"{away_team_name} {state.away_score}", color=(255, 255, 255, 255), size=big_font, parent=self.drawlist_tag)
         dpg.draw_text((box_x0 + self.scale_px(10), box_y0 + self.scale_px(40)), f"{home_team_name} {state.home_score}", color=(255, 255, 255, 255), size=big_font, parent=self.drawlist_tag)
-        inning_label = f"{event.inning_no or '-'}{'T' if event.half == 'top' else 'B'}"
+        inning_label = f"{event.inning_no or '-'}{'초' if event.half == 'top' else '말'}"
         dpg.draw_text((box_x0 + self.scale_px(12), box_y0 + self.scale_px(82)), inning_label, color=(255, 255, 255, 255), size=small_font, parent=self.drawlist_tag)
-        dpg.draw_text((box_x0 + self.scale_px(12), box_y0 + self.scale_px(102)), f"event {event_position}/{total_events}", color=(204, 222, 212, 255), size=small_font, parent=self.drawlist_tag)
+        dpg.draw_text((box_x0 + self.scale_px(12), box_y0 + self.scale_px(102)), f"이벤트 {event_position}/{total_events}", color=(204, 222, 212, 255), size=small_font, parent=self.drawlist_tag)
         for row_idx, (label, active_count, max_lights, fill_color) in enumerate(
             [
                 ("B", min(max(state.balls, 0), 3), 3, (86, 194, 117, 255)),
@@ -227,8 +228,8 @@ class FieldOverlayRenderer:
             occupied = {1: state.b1_occ, 2: state.b2_occ, 3: state.b3_occ}[base_no]
             fill = (255, 204, 82, 255) if occupied else (90, 110, 98, 180)
             self.draw_diamond(origin, 7, fill=fill)
-        self.draw_left_chip(f"P {participants.pitcher_name}", (0.024, 0.47), fill=(23, 62, 44, 230), font_size=13)
-        self.draw_left_chip(f"B {participants.batter_name}", (0.024, 0.535), fill=(86, 68, 38, 236), font_size=13)
+        self.draw_left_chip(f"투수 {participants.pitcher_name}", (0.024, 0.47), fill=(23, 62, 44, 230), font_size=13)
+        self.draw_left_chip(f"타자 {participants.batter_name}", (0.024, 0.535), fill=(86, 68, 38, 236), font_size=13)
 
     def _draw_players(self, participants: EventParticipants, state: DerivedState) -> None:
         for position in self.DEFENSE_ORDER:
@@ -243,7 +244,7 @@ class FieldOverlayRenderer:
                 batter_pos = (0.40, 0.89)
             else:
                 batter_pos = (0.50, 0.90)
-            self.draw_centered_chip(f"B {participants.batter_name}", batter_pos, fill=(96, 72, 37, 236), font_size=13)
+            self.draw_centered_chip(f"타자 {participants.batter_name}", batter_pos, fill=(96, 72, 37, 236), font_size=13)
         for base_no, occupied, runner_name in (
             (1, state.b1_occ, state.b1_name),
             (2, state.b2_occ, state.b2_name),
@@ -251,7 +252,7 @@ class FieldOverlayRenderer:
         ):
             if not occupied:
                 continue
-            self.draw_centered_chip(runner_name or f"R{base_no}", self.RUNNER_LABEL_POSITIONS[base_no], fill=(149, 118, 43, 236), font_size=12)
+            self.draw_centered_chip(runner_name or f"주자{base_no}", self.RUNNER_LABEL_POSITIONS[base_no], fill=(149, 118, 43, 236), font_size=12)
 
 
 @dataclass
@@ -271,9 +272,9 @@ class StrikeZoneRenderer:
         dpg.delete_item(self.drawlist_tag, children_only=True)
         dpg.draw_rectangle((0, 0), (self.width, self.height), fill=(31, 38, 42), color=(74, 88, 96), rounding=8, parent=self.drawlist_tag)
         if not pitch_context:
-            dpg.draw_text((18, 18), "No pitch tracking", color=(220, 220, 220), size=16, parent=self.drawlist_tag)
+            dpg.draw_text((18, 18), "투구 추적 데이터 없음", color=(220, 220, 220), size=16, parent=self.drawlist_tag)
             if dpg.does_item_exist(self.meta_text_tag):
-                dpg.set_value(self.meta_text_tag, "No pitch selected")
+                dpg.set_value(self.meta_text_tag, "선택한 투구 없음")
             return
         zone_left = 46
         zone_right = self.width - 46
@@ -284,9 +285,9 @@ class StrikeZoneRenderer:
         bottom_ft = pitch_context.zone_bottom
         half_width_ft = pitch_context.zone_half_width
         if top_ft is None or bottom_ft is None or half_width_ft is None:
-            dpg.draw_text((18, 18), "Missing strike-zone data", color=(220, 220, 220), size=16, parent=self.drawlist_tag)
+            dpg.draw_text((18, 18), "스트라이크존 데이터 없음", color=(220, 220, 220), size=16, parent=self.drawlist_tag)
             if dpg.does_item_exist(self.meta_text_tag):
-                dpg.set_value(self.meta_text_tag, "Missing strike-zone data")
+                dpg.set_value(self.meta_text_tag, "스트라이크존 데이터 없음")
             return
 
         zone_height_ft = max(0.1, top_ft - bottom_ft)
@@ -322,9 +323,9 @@ class StrikeZoneRenderer:
             py = scale_z(max(z_min, min(z_max, pitch_context.plate_z)))
             pitch_color = (253, 223, 82) if is_in_zone else (255, 121, 76)
             dpg.draw_circle((px, py), 7, color=(18, 22, 24), fill=pitch_color, thickness=2, parent=self.drawlist_tag)
-        dpg.draw_text((14, 10), "Strike Zone", color=(238, 238, 238), size=15, parent=self.drawlist_tag)
-        stance_label = {"L": "Left", "R": "Right", "S": "Switch"}.get(pitch_context.stance, "Unknown stance")
-        meta_text = f"Rule {pitch_context.rule_year} | {stance_label}"
+        dpg.draw_text((14, 10), "스트라이크존", color=(238, 238, 238), size=15, parent=self.drawlist_tag)
+        stance_label = {"L": "좌타", "R": "우타", "S": "스위치"}.get(pitch_context.stance, "타석 정보 없음")
+        meta_text = f"규칙 {pitch_context.rule_year} | {stance_label}"
         dpg.draw_text((14, self.height - 28), meta_text, color=(194, 206, 214), size=13, parent=self.drawlist_tag)
         if dpg.does_item_exist(self.meta_text_tag):
             dpg.set_value(self.meta_text_tag, meta_text)

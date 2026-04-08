@@ -10,7 +10,7 @@ from gui.tags import TagNamespace
 @dataclass
 class ProgressPanel:
     namespace: TagNamespace
-    default_message: str = "Idle"
+    default_message: str = "대기 중"
 
     @property
     def text_tag(self) -> str:

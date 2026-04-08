@@ -13,7 +13,7 @@ class FileSelector:
     namespace: TagNamespace
     label: str
     default_value: str
-    button_label: str = "Browse"
+    button_label: str = "찾아보기"
     directory: bool = False
     width: int = 420
 

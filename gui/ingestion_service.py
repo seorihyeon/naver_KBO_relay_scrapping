@@ -35,9 +35,9 @@ class DatabaseService:
         params.extend([limit, offset])
         query = f"""
         SELECT g.game_id,
-               COALESCE(to_char(g.game_date,'YYYY-MM-DD'),'NO_DATE') || ' | ' ||
-               COALESCE(at.team_name_short,'AWAY') || ' vs ' || COALESCE(ht.team_name_short,'HOME') ||
-               ' | game_id=' || g.game_id::text AS label
+               COALESCE(to_char(g.game_date,'YYYY-MM-DD'),'날짜없음') || ' | ' ||
+               COALESCE(at.team_name_short,'원정') || ' 대 ' || COALESCE(ht.team_name_short,'홈') ||
+               ' | 경기 ID=' || g.game_id::text AS label
         FROM games g
         LEFT JOIN teams at ON at.team_id = g.away_team_id
         LEFT JOIN teams ht ON ht.team_id = g.home_team_id
@@ -58,7 +58,7 @@ class IngestionService:
             context.check_cancelled()
             load_one_game(conn, path)
             if index % 10 == 0 or index == len(paths):
-                context.set_progress(index / total, f"loaded {index}/{len(paths)}")
+                context.set_progress(index / total, f"{index}/{len(paths)}건 적재 완료")
 
     def _write_report(self, report_path: Path, report: dict[str, Any]) -> None:
         report_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,10 +77,10 @@ class IngestionService:
         manifest = build_manifest(data_dir, seasons=seasons, seed=seed, project_root=project_root)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         write_manifest(manifest, output_path)
-        context.set_progress(1.0, "manifest created")
+        context.set_progress(1.0, "매니페스트 생성 완료")
         return JobResult(
-            summary="Manifest created",
-            detail=f"games={manifest['total_games']}",
+            summary="매니페스트 생성 완료",
+            detail=f"경기 수={manifest['total_games']}",
             artifacts={"manifest_path": str(output_path)},
             metrics={"total_games": manifest["total_games"]},
         )
@@ -88,12 +88,12 @@ class IngestionService:
     def create_schema_job(self, *, dsn: str, schema_path: Path, reset_first: bool, context: JobContext) -> JobResult:
         with psycopg.connect(dsn) as conn:
             if reset_first:
-                context.log("info", "resetting database")
+                context.log("info", "데이터베이스 초기화 중")
                 reset_database(conn)
-            context.log("info", "creating schema", schema_path=str(schema_path))
+            context.log("info", "스키마 생성 중", schema_path=str(schema_path))
             create_schema(conn, schema_path)
-        context.set_progress(1.0, "schema ready")
-        return JobResult(summary="Schema ready", detail=str(schema_path))
+        context.set_progress(1.0, "스키마 준비 완료")
+        return JobResult(summary="스키마 준비 완료", detail=str(schema_path))
 
     def ingest_manifest_job(
         self,
@@ -110,7 +110,7 @@ class IngestionService:
         load_started = time.perf_counter()
         with psycopg.connect(dsn) as conn:
             if reset_first:
-                context.log("info", "resetting database")
+                context.log("info", "데이터베이스 초기화 중")
                 reset_database(conn)
             create_schema(conn, schema_path)
             self._load_paths(conn, [Path(entry["path"]) for entry in entries], context)
@@ -132,10 +132,10 @@ class IngestionService:
             report["validation_seconds"] = time.perf_counter() - validation_started if validate_after_load else 0.0
             report["report_json_path"] = report_path.as_posix()
             self._write_report(report_path, report)
-        context.set_progress(1.0, "ingest finished")
+        context.set_progress(1.0, "적재 완료")
         return JobResult(
-            summary="Manifest ingested",
-            detail=f"loaded={report['loaded_game_count']} blocking={report['blocking_issue_count']}",
+            summary="매니페스트 적재 완료",
+            detail=f"적재={report['loaded_game_count']} 차단 이슈={report['blocking_issue_count']}",
             artifacts={"report_path": str(report_path)},
             metrics={
                 "loaded_game_count": report["loaded_game_count"],
@@ -154,17 +154,17 @@ class IngestionService:
         context: JobContext,
     ) -> JobResult:
         entries = load_manifest(manifest_path)["entries"]
-        context.log("info", "validating manifest", entries=len(entries), workers=workers)
+        context.log("info", "매니페스트 검증 중", entries=len(entries), workers=workers)
         if workers > 1:
             report = validate_loaded_entries_parallel(dsn, entries, workers=workers)
         else:
             with psycopg.connect(dsn) as conn:
                 report = validate_loaded_entries(conn, entries)
         self._write_report(report_path, report)
-        context.set_progress(1.0, "validation finished")
+        context.set_progress(1.0, "검증 완료")
         return JobResult(
-            summary="Validation finished",
-            detail=f"blocking={report['blocking_issue_count']} source={report['source_issue_count']}",
+            summary="검증 완료",
+            detail=f"차단 이슈={report['blocking_issue_count']} 소스 이슈={report['source_issue_count']}",
             artifacts={"report_path": str(report_path)},
             metrics={
                 "loaded_game_count": report["loaded_game_count"],
@@ -190,7 +190,7 @@ class IngestionService:
         total = max(1, len(stage_sizes))
         for index, stage_size in enumerate(stage_sizes, start=1):
             context.check_cancelled()
-            context.log("info", "running sample stage", stage_size=stage_size)
+            context.log("info", "샘플 단계 실행 중", stage_size=stage_size)
             summary = run_sampling_loop(
                 dsn,
                 {"seed": manifest["seed"], "total_games": manifest["total_games"], "entries": manifest["entries"][:stage_size]},
@@ -199,7 +199,7 @@ class IngestionService:
                 batch_sizes=[stage_size],
             )
             stage_reports.extend(summary["stage_reports"])
-            context.set_progress(index / total, f"stage {index}/{len(stage_sizes)}")
+            context.set_progress(index / total, f"단계 {index}/{len(stage_sizes)}")
             if not summary["completed_all_stages"]:
                 break
         final_summary_path = report_dir / "sampling_summary.json"
@@ -208,8 +208,8 @@ class IngestionService:
             encoding="utf-8",
         )
         return JobResult(
-            summary="Sample loop finished",
-            detail=f"stages={len(stage_reports)}",
+            summary="샘플 루프 완료",
+            detail=f"단계 수={len(stage_reports)}",
             artifacts={"summary_path": str(final_summary_path)},
             metrics={"stages": len(stage_reports)},
         )
@@ -229,4 +229,4 @@ class IngestionService:
                 reset_database(conn)
             create_schema(conn, schema_path)
             self._load_paths(conn, files, context)
-        return JobResult(summary="Directory ingested", detail=f"files={len(files)}")
+        return JobResult(summary="디렉터리 적재 완료", detail=f"파일 수={len(files)}")

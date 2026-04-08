@@ -1,13 +1,10 @@
-from __future__ import annotations
-
-import importlib.metadata as importlib_metadata
 from pathlib import Path
 
 import dearpygui.dearpygui as dpg
 
-from dpg_utils import bind_korean_font
 from gui.jobs import JobRunner
 from gui.layout_manager import LayoutManager, compute_shell_layout
+from gui.shell_builder import build_shell_ui
 from gui.state import AppState
 from gui.tabs import build_default_tabs
 from gui.tags import GLOBAL_TAGS
@@ -22,6 +19,9 @@ class AppShell:
         self.layout_manager = LayoutManager()
         self.default_viewport_w = 1440
         self.default_viewport_h = 940
+        self.viewport_title = "KBO 리플레이 검수"
+        self.safe_viewport_title = "KBO Replay QA"
+        self._localized_viewport_title_applied = False
         self.bottom_panel_h = 96
         self.bottom_db_ratio = 0.36
         self.db_detail_window_w = 980
@@ -58,58 +58,14 @@ class AppShell:
         self.layout_manager.mark_dirty()
 
     def build(self) -> None:
-        dpg.create_context()
-        self.status_window.build(
-            on_connect_db=self.ingestion_tab.connect_db,
-            on_show_detail=lambda: self.show_window(GLOBAL_TAGS.db_detail_window),
-        )
-        with dpg.window(
-            tag=GLOBAL_TAGS.main_window,
-            label="KBO Replay QA",
-            width=self.default_viewport_w - 20,
-            height=self.default_viewport_h - 420,
-            pos=(10, 150),
-            no_resize=True,
-            no_move=True,
-        ):
-            with dpg.tab_bar(tag=GLOBAL_TAGS.main_tab_bar, callback=self.on_tab_change):
-                for tab in self.tabs:
-                    tab.build(parent=GLOBAL_TAGS.main_tab_bar)
-        self.alert_window.build(
-            on_show_detail=lambda: self.show_window(GLOBAL_TAGS.alert_detail_window),
-            on_show_recent_error=self.state.show_recent_error,
-        )
-        self.db_detail_window.build(
-            default_dsn=self.state.default_dsn,
-            on_connect_db=self.ingestion_tab.connect_db,
-            on_close=lambda: self.hide_window(GLOBAL_TAGS.db_detail_window),
-        )
-        self.alert_detail_window.build(
-            on_show_recent_error=self.state.show_recent_error,
-            on_toggle_error_detail=self.state.toggle_error_detail,
-            on_close=lambda: self.hide_window(GLOBAL_TAGS.alert_detail_window),
-        )
-        with dpg.handler_registry():
-            dpg.add_key_press_handler(key=dpg.mvKey_F8, callback=lambda: self.state.show_recent_error())
-        dpg.create_viewport(title="KBO Replay QA", width=self.default_viewport_w, height=self.default_viewport_h)
-        dpg.setup_dearpygui()
-        bind_korean_font(size=16)
-        try:
-            dpg_version = importlib_metadata.version("dearpygui")
-        except Exception:
-            dpg_version = "unknown"
-        if dpg_version != "unknown" and dpg_version <= "2.1.0":
-            self.state.set_status(
-                "warn",
-                "DearPyGui IME warning",
-                f"Detected DearPyGui {dpg_version}. Windows Korean IME can be unstable in this version.",
-                source="GUI",
-            )
-        self.state.set_db_connection_indicator("Disconnected", "warn")
-        self.state.sync_presenter()
-        dpg.set_viewport_resize_callback(self.layout_manager.on_viewport_resize)
-        dpg.show_viewport()
-        self.layout_manager.mark_dirty()
+        build_shell_ui(self)
+
+    def apply_localized_viewport_title(self) -> None:
+        if self._localized_viewport_title_applied:
+            return
+        if hasattr(dpg, "set_viewport_title"):
+            dpg.set_viewport_title(self.viewport_title)
+        self._localized_viewport_title_applied = True
 
     def apply_layout(self) -> None:
         show_error_detail = dpg.does_item_exist(GLOBAL_TAGS.error_detail_group) and dpg.is_item_shown(GLOBAL_TAGS.error_detail_group)
@@ -148,6 +104,7 @@ class AppShell:
             self.layout_manager.poll(self.apply_layout)
             self.job_runner.poll()
             dpg.render_dearpygui_frame()
+            self.apply_localized_viewport_title()
         dpg.destroy_context()
 
 

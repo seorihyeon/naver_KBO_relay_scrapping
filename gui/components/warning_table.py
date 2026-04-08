@@ -36,9 +36,9 @@ class WarningTable:
             borders_outerV=True,
             height=self.height,
         ):
-            dpg.add_table_column(label="Code")
-            dpg.add_table_column(label="Summary")
-            dpg.add_table_column(label="Detail")
+            dpg.add_table_column(label="코드")
+            dpg.add_table_column(label="요약")
+            dpg.add_table_column(label="상세")
 
     def set_rows(self, rows: Iterable[WarningRow]) -> None:
         if not dpg.does_item_exist(self.table_tag):

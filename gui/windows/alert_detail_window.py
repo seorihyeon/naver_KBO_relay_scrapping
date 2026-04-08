@@ -19,18 +19,18 @@ class AlertDetailWindow:
     ) -> None:
         with dpg.window(
             tag=GLOBAL_TAGS.alert_detail_window,
-            label="Alert Details",
+            label="알림 상세",
             show=False,
             no_resize=True,
             no_move=True,
             no_collapse=True,
         ):
             with dpg.group(horizontal=True):
-                dpg.add_button(label="Show Recent Error", callback=lambda: on_show_recent_error())
-                dpg.add_button(label="Toggle Debug", callback=lambda: on_toggle_error_detail())
-                dpg.add_button(label="Close", callback=lambda: on_close())
+                dpg.add_button(label="최근 오류 보기", callback=lambda: on_show_recent_error())
+                dpg.add_button(label="디버그 전환", callback=lambda: on_toggle_error_detail())
+                dpg.add_button(label="닫기", callback=lambda: on_close())
             dpg.add_spacer(height=6)
-            dpg.add_text("No recent error", tag=GLOBAL_TAGS.recent_error_detail_summary, color=(255, 150, 150))
+            dpg.add_text("최근 오류 없음", tag=GLOBAL_TAGS.recent_error_detail_summary, color=(255, 150, 150))
             dpg.add_input_text(tag=GLOBAL_TAGS.global_notification_text, multiline=True, readonly=True, width=-1, height=180)
             with dpg.group(tag=GLOBAL_TAGS.error_detail_group, show=False):
                 dpg.add_spacer(height=6)

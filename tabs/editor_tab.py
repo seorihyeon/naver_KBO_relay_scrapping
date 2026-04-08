@@ -144,6 +144,29 @@ FINDING_TYPE_GROUPS = {
 }
 LINEUP_SECTIONS = ["home_starter", "home_bullpen", "home_candidate", "away_starter", "away_bullpen", "away_candidate"]
 RECORD_SCOPE_ITEMS = ["batter:home", "batter:away", "pitcher:home", "pitcher:away"]
+LINEUP_SECTION_LABELS = {
+    "home_starter": "홈 선발",
+    "home_bullpen": "홈 불펜",
+    "home_candidate": "홈 교체 후보",
+    "away_starter": "원정 선발",
+    "away_bullpen": "원정 불펜",
+    "away_candidate": "원정 교체 후보",
+}
+LINEUP_SECTION_LABELS_REVERSE = {label: key for key, label in LINEUP_SECTION_LABELS.items()}
+RECORD_SCOPE_LABELS = {
+    "batter:home": "타자(홈)",
+    "batter:away": "타자(원정)",
+    "pitcher:home": "투수(홈)",
+    "pitcher:away": "투수(원정)",
+}
+RECORD_SCOPE_LABELS_REVERSE = {label: key for key, label in RECORD_SCOPE_LABELS.items()}
+SIDE_LABELS = {"home": "홈", "away": "원정"}
+SIDE_LABELS_REVERSE = {label: key for key, label in SIDE_LABELS.items()}
+RELAY_VIEW_MODE_LABELS = {"Event": "이벤트", "PA": "타석"}
+RELAY_VIEW_MODE_LABELS_REVERSE = {label: key for key, label in RELAY_VIEW_MODE_LABELS.items()}
+RELAY_HALF_FILTER_LABELS = {"All": "전체", "Top": "초", "Bottom": "말"}
+RELAY_HALF_FILTER_LABELS_REVERSE = {label: key for key, label in RELAY_HALF_FILTER_LABELS.items()}
+RELAY_ALL_FILTER_LABEL = "전체"
 
 
 class CorrectionEditorTab:
@@ -209,6 +232,12 @@ class CorrectionEditorTab:
         if dpg.does_item_exist(self._t("editor_mode")):
             return str(dpg.get_value(self._t("editor_mode")) or EDITOR_MODES[0])
         return EDITOR_MODES[0]
+
+    def _lineup_section_label(self, section: str) -> str:
+        return LINEUP_SECTION_LABELS.get(section, section)
+
+    def _record_scope_label(self, table: str, side: str) -> str:
+        return RECORD_SCOPE_LABELS.get(f"{table}:{side}", f"{table}:{side}")
 
     def _action_tab_tag(self, action_key: str) -> str:
         return self._t(ACTION_TABS[action_key])
@@ -304,7 +333,7 @@ class CorrectionEditorTab:
             if labels:
                 current = dpg.get_value(self._t("file_list"))
                 dpg.set_value(self._t("file_list"), current if current in labels else labels[0])
-        self._set_value_if_exists(self._t("file_count"), f"{len(labels)} files")
+        self._set_value_if_exists(self._t("file_count"), f"{len(labels)}개 파일")
 
     def load_selected_file(self) -> None:
         label = dpg.get_value(self._t("file_list"))
@@ -321,6 +350,9 @@ class CorrectionEditorTab:
             self.selected_record_table = "batter"
             self.selected_record_side = "home"
             self.selected_record_row = 0 if self.session.get_record_rows(self.selected_record_table, self.selected_record_side) else None
+            self._set_value_if_exists(self._t("lineup_section"), self._lineup_section_label(self.selected_lineup_section))
+            self._set_value_if_exists(self._t("record_scope"), self._record_scope_label(self.selected_record_table, self.selected_record_side))
+            self._set_value_if_exists(self._t("record_total_side"), SIDE_LABELS["home"])
             self.selected_block_ref = None
             self.selected_event_ref = None
             self.selected_game_info_key = GAME_INFO_FIELDS[0]
@@ -410,7 +442,7 @@ class CorrectionEditorTab:
 
     def _open_native_text_dialog(self, tag: str, label: str, multiline: bool = False) -> None:
         current_value = str(dpg.get_value(tag) or "")
-        updated = prompt_native_text(title=f"{label} input", initial_value=current_value, multiline=multiline)
+        updated = prompt_native_text(title=f"{label} 입력", initial_value=current_value, multiline=multiline)
         if updated is not None:
             self._set_value_if_exists(tag, updated)
 
@@ -427,7 +459,7 @@ class CorrectionEditorTab:
                     kwargs["height"] = height or 90
                 dpg.add_input_text(**kwargs)
                 dpg.add_button(
-                    label="IME",
+                    label="입력",
                     width=56,
                     callback=lambda _s, _a, user_data: self._open_native_text_dialog(*user_data),
                     user_data=(tag, label, multiline),
@@ -453,7 +485,7 @@ class CorrectionEditorTab:
             kwargs["callback"] = callback
         dpg.add_checkbox(**kwargs)
 
-    def _add_runner_move_editor(self, prefix: str, *, count: int = 3, title_prefix: str = "runner") -> None:
+    def _add_runner_move_editor(self, prefix: str, *, count: int = 3, title_prefix: str = "주자") -> None:
         for index in range(1, count + 1):
             dpg.add_separator()
             dpg.add_text(f"{title_prefix} {index}")
@@ -1329,7 +1361,7 @@ class CorrectionEditorTab:
                     dpg.add_text(str(row.get("playerName", "")))
                     dpg.add_text(str(row.get("position", row.get("pos", ""))))
                     dpg.add_text(str(row.get("batorder", "")))
-                    dpg.add_text(self.selected_lineup_section)
+                    dpg.add_text(self._lineup_section_label(self.selected_lineup_section))
 
     def select_lineup_row(self, row_index: int) -> None:
         self.selected_lineup_row = row_index
@@ -1338,7 +1370,8 @@ class CorrectionEditorTab:
         self.refresh_selection_summary()
 
     def on_lineup_section_change(self) -> None:
-        self.selected_lineup_section = dpg.get_value(self._t("lineup_section"))
+        selected_label = str(dpg.get_value(self._t("lineup_section")) or "")
+        self.selected_lineup_section = LINEUP_SECTION_LABELS_REVERSE.get(selected_label, selected_label)
         rows = self._get_lineup_rows()
         self.selected_lineup_row = 0 if rows else None
         self.refresh_lineup_table()
@@ -1421,7 +1454,8 @@ class CorrectionEditorTab:
                         dpg.add_text(str(row.get(column, "")))
 
     def on_record_scope_change(self) -> None:
-        scope = dpg.get_value(self._t("record_scope"))
+        scope_label = str(dpg.get_value(self._t("record_scope")) or "")
+        scope = RECORD_SCOPE_LABELS_REVERSE.get(scope_label, scope_label)
         table, side = scope.split(":")
         self.selected_record_table = table
         self.selected_record_side = side
@@ -1453,7 +1487,7 @@ class CorrectionEditorTab:
             batter = ((self.session.payload.get("record") or {}).get("batter") or {})
             total_side = self.selected_record_side
             total_row = batter.get(f"{total_side}Total") or {}
-            self._set_value_if_exists(self._t("record_total_side"), total_side)
+            self._set_value_if_exists(self._t("record_total_side"), SIDE_LABELS.get(total_side, total_side))
             for field in RECORD_BATTER_TOTAL_FIELDS:
                 self._set_value_if_exists(self._t(f"record_total_{field}"), "" if total_row.get(field) is None else str(total_row.get(field)))
 
@@ -1486,7 +1520,8 @@ class CorrectionEditorTab:
         session = self._session_required()
         if session is None:
             return
-        side = str(dpg.get_value(self._t("record_total_side")) or "home")
+        side_label = str(dpg.get_value(self._t("record_total_side")) or SIDE_LABELS["home"])
+        side = SIDE_LABELS_REVERSE.get(side_label, side_label)
 
         def mutator(payload: dict[str, Any]) -> None:
             batter = ((payload.get("record") or {}).setdefault("batter", {}))
@@ -1525,9 +1560,9 @@ class CorrectionEditorTab:
     def _relay_filters(self) -> dict[str, Any]:
         return {
             "query": str(dpg.get_value(self._t("relay_query")) or "").strip().lower(),
-            "inning": str(dpg.get_value(self._t("relay_inning_filter")) or "All"),
-            "half": str(dpg.get_value(self._t("relay_half_filter")) or "All"),
-            "type": str(dpg.get_value(self._t("relay_type_filter")) or "All"),
+            "inning": str(dpg.get_value(self._t("relay_inning_filter")) or RELAY_ALL_FILTER_LABEL),
+            "half": str(dpg.get_value(self._t("relay_half_filter")) or RELAY_ALL_FILTER_LABEL),
+            "type": str(dpg.get_value(self._t("relay_type_filter")) or RELAY_ALL_FILTER_LABEL),
             "errors_only": bool(dpg.get_value(self._t("relay_errors_only"))),
             "duplicates_only": bool(dpg.get_value(self._t("relay_duplicates_only"))),
             "missing_only": bool(dpg.get_value(self._t("relay_missing_only"))),
@@ -1548,8 +1583,8 @@ class CorrectionEditorTab:
     def _refresh_relay_filter_items(self) -> None:
         if not self.session:
             return
-        inning_items = ["All"]
-        type_items = ["All"]
+        inning_items = [RELAY_ALL_FILTER_LABEL]
+        type_items = [RELAY_ALL_FILTER_LABEL]
         innings_seen = set()
         types_seen = set()
         for _group_index, _block_index, block in self._iter_blocks():
@@ -1570,11 +1605,11 @@ class CorrectionEditorTab:
             pitch_match = query in str(event.get("ptsPitchId", "")).lower()
             if not any((text_match, batter_match, pitcher_match, pitch_match)):
                 return False
-        if filters["inning"] != "All" and str(block.get("inn", "")) != filters["inning"]:
+        if filters["inning"] != RELAY_ALL_FILTER_LABEL and str(block.get("inn", "")) != filters["inning"]:
             return False
-        if filters["half"] != "All" and str(block.get("homeOrAway", "")) != ("0" if filters["half"] == "Top" else "1"):
+        if filters["half"] != RELAY_ALL_FILTER_LABEL and str(block.get("homeOrAway", "")) != ("0" if filters["half"] == RELAY_HALF_FILTER_LABELS["Top"] else "1"):
             return False
-        if filters["type"] != "All" and str(event.get("type", "")) != filters["type"]:
+        if filters["type"] != RELAY_ALL_FILTER_LABEL and str(event.get("type", "")) != filters["type"]:
             return False
         if filters["errors_only"] and not any(code.startswith("missing_") for code in issue_codes):
             return False
@@ -1653,7 +1688,8 @@ class CorrectionEditorTab:
         block = self._get_selected_block()
         if not block:
             return
-        view_mode = str(dpg.get_value(self._t("relay_view_mode")) or "Event") if dpg.does_item_exist(self._t("relay_view_mode")) else "Event"
+        view_mode_label = str(dpg.get_value(self._t("relay_view_mode")) or RELAY_VIEW_MODE_LABELS["Event"]) if dpg.does_item_exist(self._t("relay_view_mode")) else RELAY_VIEW_MODE_LABELS["Event"]
+        view_mode = RELAY_VIEW_MODE_LABELS_REVERSE.get(view_mode_label, view_mode_label)
         if view_mode == "PA":
             pa_rows = self.session.preview_auto_rebuild().get("plate_appearances", [])
             target_rows = [
@@ -2227,7 +2263,7 @@ class CorrectionEditorTab:
             self.selected_record_table = location.get("table", "batter")
             self.selected_record_side = location.get("side", "home")
             self.selected_record_row = location.get("row_index")
-            self._set_value_if_exists(self._t("record_scope"), f"{self.selected_record_table}:{self.selected_record_side}")
+            self._set_value_if_exists(self._t("record_scope"), self._record_scope_label(self.selected_record_table, self.selected_record_side))
             self._set_value_if_exists(self._t("editor_mode"), EDITOR_MODES[1])
             self._set_tab_value(self._t("detail_tabs"), self._t("record_tab"))
             self.refresh_record_table()
@@ -2294,7 +2330,7 @@ class CorrectionEditorTab:
             self.auto_preview.get("diff") or "(no auto rebuild diff)",
         ]
         if pa_lines:
-            lines.extend(["", "PA Preview:"])
+            lines.extend(["", "타석 미리보기:"])
             lines.extend(pa_lines)
         preview_text = "\n".join(lines)
         self._set_value_if_exists(self._t("auto_preview_text"), preview_text)
@@ -2399,35 +2435,35 @@ class CorrectionEditorTab:
     def build(self, parent: str) -> None:
         with dpg.tab(label="수정/보정", parent=parent):
             header_row = self.header_toolbar.build()
-            dpg.add_text("Root", parent=header_row)
+            dpg.add_text("루트 경로", parent=header_row)
             dpg.add_input_text(tag=self._t("root_dir"), width=320, default_value=self.state.default_data_dir, parent=header_row)
-            dpg.add_text("Search", parent=header_row)
+            dpg.add_text("검색", parent=header_row)
             dpg.add_input_text(tag=self._t("search"), width=220, parent=header_row, callback=lambda: self.refresh_file_list())
             with dpg.group(horizontal=True, parent=header_row):
                 dpg.add_button(label="목록 새로고침", callback=lambda: self.refresh_file_list())
                 dpg.add_button(label="파일 열기", callback=lambda: self.load_selected_file())
                 dpg.add_button(label="저장", callback=lambda: self.save_current_file())
-                dpg.add_button(label="Undo", callback=lambda: self.undo())
-                dpg.add_button(label="Redo", callback=lambda: self.redo())
+                dpg.add_button(label="실행 취소", callback=lambda: self.undo())
+                dpg.add_button(label="다시 실행", callback=lambda: self.redo())
                 dpg.add_button(label="검증", callback=lambda: self.run_validation())
                 dpg.add_button(label="세션 되돌리기", callback=lambda: self.revert_session())
                 dpg.add_button(label="백업 복원", callback=lambda: self.restore_backup())
 
             loaded_row = self.loaded_toolbar.build()
             with dpg.group(horizontal=True, parent=loaded_row):
-                dpg.add_text("Loaded")
+                dpg.add_text("불러온 파일")
                 dpg.add_text("-", tag=self._t("loaded_file"))
             status_row = self.status_toolbar.build()
             with dpg.group(horizontal=True, parent=status_row):
-                dpg.add_text("Save status")
+                dpg.add_text("저장 상태")
                 dpg.add_text("-", tag=self._t("save_status"))
                 dpg.add_spacer(width=12)
-                dpg.add_text("Selection")
+                dpg.add_text("선택")
                 dpg.add_text("선택된 항목 없음", tag=self._t("selection_summary"))
 
             with dpg.group(horizontal=True, tag=self._t("workspace")):
                 with dpg.child_window(tag=self._t("file_panel"), width=260, height=540, border=True):
-                    dpg.add_text("Game Files")
+                    dpg.add_text("경기 파일")
                     dpg.add_text("0 files", tag=self._t("file_count"))
                     dpg.add_listbox(tag=self._t("file_list"), items=[], width=-1, num_items=24)
                     dpg.add_separator()
@@ -2468,17 +2504,17 @@ class CorrectionEditorTab:
 
                 with dpg.child_window(tag=self._t("center_panel"), width=840, height=540, border=True):
                     with dpg.tab_bar(tag=self._t("detail_tabs")):
-                        with dpg.tab(tag=self._t("game_info_tab"), label="Game Info"):
-                            dpg.add_button(label="Game Info 적용", callback=lambda: self.apply_game_info_editor())
+                        with dpg.tab(tag=self._t("game_info_tab"), label="경기 정보"):
+                            dpg.add_button(label="경기 정보 적용", callback=lambda: self.apply_game_info_editor())
                             with dpg.child_window(tag=self._t("game_info_table"), width=-1, height=440):
                                 pass
 
-                        with dpg.tab(tag=self._t("lineup_tab"), label="Lineup"):
+                        with dpg.tab(tag=self._t("lineup_tab"), label="라인업"):
                             with dpg.group(horizontal=True):
                                 dpg.add_combo(
                                     tag=self._t("lineup_section"),
-                                    items=["home_starter", "home_bullpen", "home_candidate", "away_starter", "away_bullpen", "away_candidate"],
-                                    default_value=self.selected_lineup_section,
+                                    items=[LINEUP_SECTION_LABELS[key] for key in LINEUP_SECTIONS],
+                                    default_value=LINEUP_SECTION_LABELS[self.selected_lineup_section],
                                     callback=lambda: self.on_lineup_section_change(),
                                     width=180,
                                 )
@@ -2489,7 +2525,7 @@ class CorrectionEditorTab:
                             with dpg.child_window(tag=self._t("lineup_table"), width=-1, height=440):
                                 pass
 
-                        with dpg.tab(tag=self._t("relay_tab"), label="Relay"):
+                        with dpg.tab(tag=self._t("relay_tab"), label="중계"):
                             dpg.add_text("경기 흐름 / 선택 맥락")
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="이전 이벤트", callback=lambda: self.select_relative_event(-1))
@@ -2497,11 +2533,11 @@ class CorrectionEditorTab:
                             dpg.add_input_text(tag=self._t("context_summary_text"), multiline=True, readonly=True, width=-1, height=120)
                             dpg.add_input_text(tag=self._t("context_flow_text"), multiline=True, readonly=True, width=-1, height=110)
                             with dpg.group(horizontal=True):
-                                dpg.add_combo(tag=self._t("relay_view_mode"), items=["Event", "PA"], default_value="Event", width=80, callback=lambda: self.refresh_relay_event_table())
-                                dpg.add_input_text(tag=self._t("relay_query"), hint="text / player / ptsPitchId", width=220, callback=lambda: self.refresh_relay_event_table())
-                                dpg.add_combo(tag=self._t("relay_inning_filter"), items=["All"], default_value="All", width=90, callback=lambda: self.refresh_relay_event_table())
-                                dpg.add_combo(tag=self._t("relay_half_filter"), items=["All", "Top", "Bottom"], default_value="All", width=90, callback=lambda: self.refresh_relay_event_table())
-                                dpg.add_combo(tag=self._t("relay_type_filter"), items=["All"], default_value="All", width=90, callback=lambda: self.refresh_relay_event_table())
+                                dpg.add_combo(tag=self._t("relay_view_mode"), items=list(RELAY_VIEW_MODE_LABELS.values()), default_value=RELAY_VIEW_MODE_LABELS["Event"], width=80, callback=lambda: self.refresh_relay_event_table())
+                                dpg.add_input_text(tag=self._t("relay_query"), hint="문구 / 선수 / ptsPitchId", width=220, callback=lambda: self.refresh_relay_event_table())
+                                dpg.add_combo(tag=self._t("relay_inning_filter"), items=[RELAY_ALL_FILTER_LABEL], default_value=RELAY_ALL_FILTER_LABEL, width=90, callback=lambda: self.refresh_relay_event_table())
+                                dpg.add_combo(tag=self._t("relay_half_filter"), items=list(RELAY_HALF_FILTER_LABELS.values()), default_value=RELAY_HALF_FILTER_LABELS["All"], width=90, callback=lambda: self.refresh_relay_event_table())
+                                dpg.add_combo(tag=self._t("relay_type_filter"), items=[RELAY_ALL_FILTER_LABEL], default_value=RELAY_ALL_FILTER_LABEL, width=90, callback=lambda: self.refresh_relay_event_table())
                                 dpg.add_checkbox(tag=self._t("relay_errors_only"), label="오류만", callback=lambda: self.refresh_relay_event_table())
                                 dpg.add_checkbox(tag=self._t("relay_duplicates_only"), label="중복만", callback=lambda: self.refresh_relay_event_table())
                                 dpg.add_checkbox(tag=self._t("relay_missing_only"), label="누락 의심만", callback=lambda: self.refresh_relay_event_table())
@@ -2525,9 +2561,9 @@ class CorrectionEditorTab:
                                 dpg.add_button(label="미리보기", callback=lambda: self.refresh_auto_preview())
                                 dpg.add_button(label="자동 재계산", callback=lambda: self.apply_auto_rebuild())
 
-                        with dpg.tab(tag=self._t("record_tab"), label="Record"):
+                        with dpg.tab(tag=self._t("record_tab"), label="기록"):
                             with dpg.group(horizontal=True):
-                                dpg.add_combo(tag=self._t("record_scope"), items=["batter:home", "batter:away", "pitcher:home", "pitcher:away"], default_value="batter:home", width=180, callback=lambda: self.on_record_scope_change())
+                                dpg.add_combo(tag=self._t("record_scope"), items=[RECORD_SCOPE_LABELS[item] for item in RECORD_SCOPE_ITEMS], default_value=RECORD_SCOPE_LABELS["batter:home"], width=180, callback=lambda: self.on_record_scope_change())
                                 dpg.add_button(label="행 추가", callback=lambda: self.add_record_row())
                                 dpg.add_button(label="행 삭제", callback=lambda: self.delete_record_row())
                                 dpg.add_button(label="행 적용", callback=lambda: self.apply_record_editor())
@@ -2543,13 +2579,13 @@ class CorrectionEditorTab:
                                 pass
                             dpg.add_input_text(tag=self._t("validation_hint_text"), multiline=True, readonly=True, width=-1, height=120, default_value="좌측 패널의 문제 목록이 기본 진입점입니다.\n고급 모드에서는 이 탭에서 검증을 다시 실행할 수 있습니다.")
 
-                        with dpg.tab(tag=self._t("diff_tab"), label="Diff"):
+                        with dpg.tab(tag=self._t("diff_tab"), label="차이점"):
                             dpg.add_input_text(tag=self._t("diff_text"), multiline=True, readonly=True, width=-1, height=440)
 
-                        with dpg.tab(tag=self._t("history_tab"), label="History"):
+                        with dpg.tab(tag=self._t("history_tab"), label="변경 이력"):
                             dpg.add_input_text(tag=self._t("history_text"), multiline=True, readonly=True, width=-1, height=440)
 
-                        with dpg.tab(tag=self._t("auto_preview_tab"), label="Auto Preview"):
+                        with dpg.tab(tag=self._t("auto_preview_tab"), label="자동 재계산 미리보기"):
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="미리보기 갱신", callback=lambda: self.refresh_auto_preview())
                                 dpg.add_button(label="자동 재계산 적용", callback=lambda: self.apply_auto_rebuild())
@@ -2583,25 +2619,25 @@ class CorrectionEditorTab:
                     with dpg.group(tag=self._t("advanced_mode_panel"), show=False):
                         dpg.add_text("고급 편집 섹션")
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
-                    with dpg.collapsing_header(tag=self._t("section_game_info"), label="Game Info Editor", default_open=False, parent=self._t("advanced_mode_panel")):
+                    with dpg.collapsing_header(tag=self._t("section_game_info"), label="경기 정보 편집기", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in GAME_INFO_FIELDS:
                             if field in BOOLEAN_GAME_INFO_FIELDS:
                                 self._add_labeled_checkbox(self._t(f"game_info_{field}"), field)
                             else:
                                 self._add_labeled_input_text(self._t(f"game_info_{field}"), field)
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
-                    with dpg.collapsing_header(tag=self._t("section_lineup_row"), label="Lineup Row Editor", default_open=False, parent=self._t("advanced_mode_panel")):
+                    with dpg.collapsing_header(tag=self._t("section_lineup_row"), label="라인업 행 편집기", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in LINEUP_FIELDS:
                             self._add_labeled_input_text(self._t(f"lineup_{field}"), field)
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
-                    with dpg.collapsing_header(tag=self._t("section_relay_block"), label="Relay Block Editor", default_open=False, parent=self._t("advanced_mode_panel")):
+                    with dpg.collapsing_header(tag=self._t("section_relay_block"), label="중계 블록 편집기", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in BLOCK_FIELDS:
                             self._add_labeled_input_text(self._t(f"block_{field}"), field)
                         for field in ("homeTeamWinRate", "awayTeamWinRate", "wpaByPlate"):
                             self._add_labeled_input_text(self._t(f"metric_{field}"), f"metric.{field}")
                         dpg.add_button(label="블록 적용", callback=lambda: self.apply_block_editor())
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
-                    with dpg.collapsing_header(tag=self._t("section_relay_event"), label="Relay Event Editor", default_open=False, parent=self._t("advanced_mode_panel")):
+                    with dpg.collapsing_header(tag=self._t("section_relay_event"), label="중계 이벤트 편집기", default_open=False, parent=self._t("advanced_mode_panel")):
                         for field in EVENT_FIELDS:
                             if field == "text":
                                 self._add_labeled_input_text(self._t(f"event_{field}"), field, multiline=True, height=90)
@@ -2623,8 +2659,8 @@ class CorrectionEditorTab:
                                 self._add_labeled_input_text(self._t(f"{side}_{field}"), f"{side}.{field}")
                         dpg.add_button(label="이벤트 적용", callback=lambda: self.apply_event_editor())
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
-                    with dpg.collapsing_header(tag=self._t("section_pa_split_merge_advanced"), label="Plate Appearance Split/Merge", default_open=False, parent=self._t("advanced_mode_panel")):
-                        dpg.add_text("Advanced Split")
+                    with dpg.collapsing_header(tag=self._t("section_pa_split_merge_advanced"), label="타석 분리 / 병합", default_open=False, parent=self._t("advanced_mode_panel")):
+                        dpg.add_text("고급 분리")
                         for field in ("first_batter_id", "first_batter_name", "first_detail", "first_text", "second_batter_id", "second_batter_name", "second_detail", "second_text"):
                             self._add_labeled_input_text(self._t(f"split_{field}"), field)
                         self._add_labeled_combo(
@@ -2639,11 +2675,11 @@ class CorrectionEditorTab:
                             items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
                             default_value=RESULT_TYPE_LABELS["double"],
                         )
-                        self._add_runner_move_editor("split_first", count=3, title_prefix="split_first runner")
-                        self._add_runner_move_editor("split_second", count=3, title_prefix="split_second runner")
+                        self._add_runner_move_editor("split_first", count=3, title_prefix="첫 번째 타석 주자")
+                        self._add_runner_move_editor("split_second", count=3, title_prefix="두 번째 타석 주자")
                         dpg.add_button(label="고급 타석 분리 적용", callback=lambda: self.split_selected_plate_appearance_advanced())
                         dpg.add_separator()
-                        dpg.add_text("Merge")
+                        dpg.add_text("병합")
                         self._add_labeled_input_text(self._t("merge_batter_id"), "merged_batter_id")
                         self._add_labeled_input_text(self._t("merge_batter_name"), "merged_batter_name")
                         dpg.add_button(label="이전 타석과 병합", callback=lambda: self.merge_selected_plate_appearance())
@@ -2689,7 +2725,7 @@ class CorrectionEditorTab:
                         with dpg.group(horizontal=True):
                             dpg.add_input_text(tag=self._t("add_text"), multiline=True, width=-70, height=90)
                             dpg.add_button(
-                                label="IME",
+                                label="입력",
                                 width=56,
                                 callback=lambda: self._open_native_text_dialog(self._t("add_text"), "이벤트 문구", True),
                             )
@@ -2763,22 +2799,22 @@ class CorrectionEditorTab:
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="미리보기 갱신", callback=lambda: self.refresh_auto_preview())
                             dpg.add_button(label="자동 재계산 적용", callback=lambda: self.apply_auto_rebuild())
-                            dpg.add_button(label="Undo", callback=lambda: self.undo())
-                            dpg.add_button(label="Redo", callback=lambda: self.redo())
+                            dpg.add_button(label="실행 취소", callback=lambda: self.undo())
+                            dpg.add_button(label="다시 실행", callback=lambda: self.redo())
                         dpg.add_input_text(tag=self._t("basic_auto_preview_text"), multiline=True, readonly=True, width=-1, height=180)
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
                     with dpg.group(tag=self._t("record_batter_editor_group"), parent=self._t("advanced_mode_panel")):
-                        dpg.add_text("Record Batter Row")
+                        dpg.add_text("타자 기록 행")
                         for field in RECORD_BATTER_FIELDS:
                             self._add_labeled_input_text(self._t(f"record_batter_{field}"), field)
                     with dpg.group(tag=self._t("record_pitcher_editor_group"), show=False, parent=self._t("advanced_mode_panel")):
-                        dpg.add_text("Record Pitcher Row")
+                        dpg.add_text("투수 기록 행")
                         for field in RECORD_PITCHER_FIELDS:
                             self._add_labeled_input_text(self._t(f"record_pitcher_{field}"), field)
                     dpg.add_separator(parent=self._t("advanced_mode_panel"))
                     with dpg.group(tag=self._t("record_totals_section"), parent=self._t("advanced_mode_panel")):
-                        dpg.add_text("Record Batter Totals")
-                        self._add_labeled_combo(self._t("record_total_side"), "side", items=["home", "away"], default_value="home")
+                        dpg.add_text("타자 기록 합계")
+                        self._add_labeled_combo(self._t("record_total_side"), "구분", items=list(SIDE_LABELS.values()), default_value=SIDE_LABELS["home"])
                         for field in RECORD_BATTER_TOTAL_FIELDS:
                             self._add_labeled_input_text(self._t(f"record_total_{field}"), f"total.{field}")
                         dpg.add_button(label="합계 수동 적용", callback=lambda: self.apply_record_total_editor())

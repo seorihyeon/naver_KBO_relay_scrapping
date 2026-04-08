@@ -15,7 +15,7 @@ class GlobalStatusWindow:
     def build(self, *, on_connect_db: Callable[[], None], on_show_detail: Callable[[], None]) -> None:
         with dpg.window(
             tag=GLOBAL_TAGS.db_window,
-            label="Global DB Status",
+            label="전체 DB 상태",
             width=720,
             height=self.height,
             pos=(10, 10),
@@ -32,16 +32,16 @@ class GlobalStatusWindow:
                 ):
                     with dpg.group(horizontal=True):
                         dpg.add_text("DB")
-                        dpg.add_text("Disconnected", tag=GLOBAL_TAGS.db_connection_summary_text, color=(255, 195, 90))
+                        dpg.add_text("연결 안 됨", tag=GLOBAL_TAGS.db_connection_summary_text, color=(255, 195, 90))
                     with dpg.group(horizontal=True):
-                        dpg.add_text("Status")
-                        dpg.add_text("Idle", tag=GLOBAL_TAGS.status_text, color=(180, 180, 180), wrap=180)
+                        dpg.add_text("상태")
+                        dpg.add_text("대기 중", tag=GLOBAL_TAGS.status_text, color=(180, 180, 180), wrap=180)
                     dpg.add_text(
-                        "Use the detail window for DSN changes and low-level status logs.",
+                        "상세 창에서 DSN 변경과 세부 상태 로그를 확인할 수 있습니다.",
                         tag=GLOBAL_TAGS.db_summary_hint_text,
                         color=(160, 160, 160),
                         wrap=220,
                     )
                 with dpg.group():
-                    dpg.add_button(label="Connect DB", callback=lambda: on_connect_db(), width=120)
-                    dpg.add_button(label="Details", callback=lambda: on_show_detail(), width=120)
+                    dpg.add_button(label="DB 연결", callback=lambda: on_connect_db(), width=120)
+                    dpg.add_button(label="상세", callback=lambda: on_show_detail(), width=120)

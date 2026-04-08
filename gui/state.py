@@ -41,7 +41,7 @@ class AppStateModel:
     game_id: int | None = None
     status_logs: list[str] = field(default_factory=list)
     notifications: list[NotificationEntry] = field(default_factory=list)
-    active_tab: str = "Collection"
+    active_tab: str = "수집"
     last_error_summary: str = ""
     last_error_debug: str = ""
     last_update_at: str = "-"
@@ -50,13 +50,13 @@ class AppStateModel:
     default_data_dir: str = "example"
     default_schema_path: str = "sql/schema.sql"
     strike_zone_rules: dict[int, dict[str, float]] = field(default_factory=dict)
-    db_indicator_text: str = "Disconnected"
+    db_indicator_text: str = "연결 안 됨"
     db_indicator_channel: str = "warn"
     last_status_channel: str = "info"
-    last_status_summary: str = "Idle"
+    last_status_summary: str = "대기 중"
     last_status_detail: str | None = None
-    recent_task_text: str = "No recent task"
-    recent_result_text: str = "Idle"
+    recent_task_text: str = "최근 작업: 없음"
+    recent_result_text: str = "대기 중"
 
 
 def _default_strike_zone_rules() -> dict[int, dict[str, float]]:
@@ -101,8 +101,8 @@ def _build_model(config: dict[str, Any]) -> AppStateModel:
         except Exception:
             continue
     model.strike_zone_rules = normalized_rules or _default_strike_zone_rules()
-    model.recent_result_text = "Idle"
-    model.db_indicator_text = "Disconnected"
+    model.recent_result_text = "대기 중"
+    model.db_indicator_text = "연결 안 됨"
     return model
 
 
@@ -115,7 +115,7 @@ class AppStatePresenter:
         return (120, 220, 140)
 
     def _status_label(self, channel: str) -> str:
-        return {"info": "Success / Running", "warn": "Warning", "error": "Failed"}.get(channel, channel)
+        return {"info": "정상 / 진행 중", "warn": "경고", "error": "실패"}.get(channel, channel)
 
     def render(self, model: AppStateModel) -> None:
         self.render_active_tab(model)
@@ -126,7 +126,7 @@ class AppStatePresenter:
 
     def render_active_tab(self, model: AppStateModel) -> None:
         if dpg.does_item_exist(GLOBAL_TAGS.global_status_current_tab):
-            dpg.set_value(GLOBAL_TAGS.global_status_current_tab, f"Current tab: {model.active_tab}")
+            dpg.set_value(GLOBAL_TAGS.global_status_current_tab, f"현재 탭: {model.active_tab}")
 
     def render_notifications(self, model: AppStateModel) -> None:
         if dpg.does_item_exist(GLOBAL_TAGS.global_notification_text):
@@ -134,8 +134,8 @@ class AppStatePresenter:
             dpg.set_value(GLOBAL_TAGS.global_notification_text, "\n".join(lines))
 
     def render_errors(self, model: AppStateModel) -> None:
-        summary = model.last_error_summary or "No recent error"
-        detail = model.last_error_debug or "No debug detail"
+        summary = model.last_error_summary or "최근 오류 없음"
+        detail = model.last_error_debug or "디버그 상세 없음"
         if dpg.does_item_exist(GLOBAL_TAGS.recent_error_summary):
             dpg.set_value(GLOBAL_TAGS.recent_error_summary, summary)
         if dpg.does_item_exist(GLOBAL_TAGS.recent_error_detail_summary):
@@ -162,11 +162,11 @@ class AppStatePresenter:
         if dpg.does_item_exist(GLOBAL_TAGS.global_status_result):
             dpg.set_value(
                 GLOBAL_TAGS.global_status_result,
-                f"Status: {self._status_label(model.last_status_channel)}",
+                f"상태: {self._status_label(model.last_status_channel)}",
             )
             dpg.configure_item(GLOBAL_TAGS.global_status_result, color=self._status_color(model.last_status_channel))
         if dpg.does_item_exist(GLOBAL_TAGS.global_status_updated_at):
-            dpg.set_value(GLOBAL_TAGS.global_status_updated_at, f"Last update: {model.last_update_at}")
+            dpg.set_value(GLOBAL_TAGS.global_status_updated_at, f"마지막 업데이트: {model.last_update_at}")
 
     def show_recent_error(self, model: AppStateModel) -> None:
         self.render_errors(model)
@@ -264,14 +264,14 @@ class AppState:
         user_detail: str | None = None,
         *,
         debug_detail: str | None = None,
-        source: str = "Common",
+        source: str = "공통",
         append: bool = True,
     ) -> None:
         self.model.last_update_at = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.model.last_status_channel = channel
         self.model.last_status_summary = summary
         self.model.last_status_detail = user_detail
-        self.model.recent_task_text = f"Recent task: {source} | {summary}"
+        self.model.recent_task_text = f"최근 작업: {source} | {summary}"
         self.model.recent_result_text = channel
 
         merged_detail = user_detail

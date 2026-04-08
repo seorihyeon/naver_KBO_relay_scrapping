@@ -41,8 +41,8 @@ class NavigatorPanel:
             with dpg.child_window(tag=self.body_tag, width=-1, height=max(40, self.height - 50), border=False, no_scrollbar=True):
                 dpg.add_text("-", tag=self.text_tag, wrap=max(140, self.width - 24))
             with dpg.group(horizontal=True):
-                dpg.add_button(tag=self.prev_tag, label="Prev", width=72, callback=lambda: on_prev())
-                dpg.add_button(tag=self.next_tag, label="Next", width=72, callback=lambda: on_next())
+                dpg.add_button(tag=self.prev_tag, label="이전", width=72, callback=lambda: on_prev())
+                dpg.add_button(tag=self.next_tag, label="다음", width=72, callback=lambda: on_next())
 
     def set_summary(self, text: str) -> None:
         if dpg.does_item_exist(self.text_tag):

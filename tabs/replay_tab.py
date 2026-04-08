@@ -45,7 +45,15 @@ class ReplayLayout:
 
 class ReplayTab:
     key = "replay"
-    label = "Replay"
+    label = "리플레이"
+
+    EVENT_CATEGORY_LABELS = {
+        "pitch": "투구",
+        "bat_result": "타격 결과",
+        "baserunning": "주루",
+        "player_change": "선수 교체",
+        "other": "기타",
+    }
 
     PANEL_GAP = 8
     CONTROL_PANEL_HEIGHT = 46
@@ -60,11 +68,11 @@ class ReplayTab:
         self.request_layout = request_layout or (lambda: None)
         self.namespace = TagNamespace("replay")
         self.game_selector = GameSelector(self.namespace.child("game_selector"), width=760)
-        self.loaded_game_card = SummaryCard(self.namespace.child("loaded_game"), title="Loaded game", default_text="No game loaded")
-        self.event_nav = NavigatorPanel(self.namespace.child("event_nav"), title="Event")
-        self.pa_nav = NavigatorPanel(self.namespace.child("pa_nav"), title="PA")
-        self.inning_nav = NavigatorPanel(self.namespace.child("inning_nav"), title="Inning")
-        self.pitch_nav = NavigatorPanel(self.namespace.child("pitch_nav"), title="Pitch")
+        self.loaded_game_card = SummaryCard(self.namespace.child("loaded_game"), title="불러온 경기", default_text="불러온 경기가 없습니다")
+        self.event_nav = NavigatorPanel(self.namespace.child("event_nav"), title="이벤트")
+        self.pa_nav = NavigatorPanel(self.namespace.child("pa_nav"), title="타석")
+        self.inning_nav = NavigatorPanel(self.namespace.child("inning_nav"), title="이닝")
+        self.pitch_nav = NavigatorPanel(self.namespace.child("pitch_nav"), title="투구")
         self.warning_table = WarningTable(self.namespace.child("warnings"), height=120)
         self.repository: ReplayRepository | None = None
         self.state_builder: ReplayStateBuilder | None = None
@@ -93,7 +101,7 @@ class ReplayTab:
                 control_row = self.control_toolbar.build()
                 with dpg.group(parent=control_row):
                     self.game_selector.build(on_load=lambda: self.load_selected_game())
-                dpg.add_button(label="Refresh warnings", width=120, parent=control_row, callback=lambda: self.refresh_warning_panel())
+                dpg.add_button(label="경고 새로고침", width=120, parent=control_row, callback=lambda: self.refresh_warning_panel())
 
             dpg.add_spacer(height=self.PANEL_GAP)
             with dpg.child_window(tag=self._tag("stage_panel"), width=-1, height=400, border=True, no_scrollbar=True):
@@ -112,14 +120,14 @@ class ReplayTab:
                         with dpg.child_window(tag=self._tag("zone_panel"), width=220, height=-1, border=True, no_scrollbar=True):
                             dpg.add_drawlist(tag=self._tag("zone_drawlist"), width=self.strike_zone_w, height=self.strike_zone_h)
                             dpg.add_spacer(height=6)
-                            dpg.add_text("No pitch selected", tag=self._tag("zone_meta"), wrap=188)
+                            dpg.add_text("선택한 투구 없음", tag=self._tag("zone_meta"), wrap=188)
             dpg.add_spacer(height=self.PANEL_GAP)
             with dpg.child_window(tag=self._tag("inspector_panel"), width=-1, height=self.BOTTOM_INFO_MIN_HEIGHT, border=True, no_scrollbar=True):
                 self.loaded_game_card.build()
-                dpg.add_text("Focus detail")
+                dpg.add_text("선택 상세")
                 dpg.add_input_text(tag=self._tag("event_detail"), multiline=True, readonly=True, width=-1, height=self.DETAIL_TEXT_HEIGHT)
-                dpg.add_text("Warnings: 0", tag=self._tag("warning_count"), color=(255, 100, 100))
-                dpg.add_text("No anomaly detected", tag=self._tag("warning_hint"), wrap=360)
+                dpg.add_text("경고: 0", tag=self._tag("warning_count"), color=(255, 100, 100))
+                dpg.add_text("이상 징후가 없습니다", tag=self._tag("warning_hint"), wrap=360)
                 self.warning_table.build()
 
         self.game_selector.set_games(self.state.games)
@@ -127,6 +135,11 @@ class ReplayTab:
 
     def _on_games_changed(self, games) -> None:
         self.game_selector.set_games(games)
+
+    def _event_category_label(self, category: str | None) -> str:
+        if not category:
+            return "-"
+        return self.EVENT_CATEGORY_LABELS.get(category, category)
 
     def apply_responsive_layout(self, content_w: int, content_h: int) -> None:
         if not dpg.does_item_exist(self._tag("control_panel")):
@@ -215,17 +228,17 @@ class ReplayTab:
 
     def load_selected_game(self) -> None:
         if not self.state.conn:
-            self.state.set_status("warn", "Replay load failed", "Connect to DB first.", source=self.label)
+            self.state.set_status("warn", "리플레이 불러오기 실패", "먼저 DB에 연결하세요.", source=self.label)
             return
         selected_label = self.game_selector.get_selected_label()
         match = [game for game in self.state.games if game.label == selected_label]
         if not match:
-            self.state.set_status("warn", "Replay load failed", "Select a game first.", source=self.label)
+            self.state.set_status("warn", "리플레이 불러오기 실패", "먼저 경기를 선택하세요.", source=self.label)
             return
         selected_game = match[0]
         self.repository = ReplayRepository(self.state.conn)
         self.state.set_game_selection(selected_game.game_id)
-        self.state.set_status("info", "Loading replay game", selected_game.label, source=self.label, append=False)
+        self.state.set_status("info", "리플레이 경기 불러오는 중", selected_game.label, source=self.label, append=False)
         try:
             dataset = self.repository.load_game(selected_game.game_id)
             roster_context = build_roster_context(dataset)
@@ -238,13 +251,13 @@ class ReplayTab:
             self.render_current_view()
             self.state.set_status(
                 "info",
-                f"Replay game loaded (game_id={selected_game.game_id})",
-                f"events={len(dataset.events)} pitches={len(dataset.pitches)}",
+                f"리플레이 경기 불러오기 완료 (경기 ID={selected_game.game_id})",
+                f"이벤트={len(dataset.events)} 투구={len(dataset.pitches)}",
                 source=self.label,
                 append=False,
             )
         except Exception as exc:
-            self.state.set_status("error", "Replay load failed", str(exc), debug_detail=str(exc), source=self.label, append=False)
+            self.state.set_status("error", "리플레이 불러오기 실패", str(exc), debug_detail=str(exc), source=self.label, append=False)
 
     def refresh_warning_panel(self) -> None:
         if self.state_builder is not None:
@@ -252,14 +265,14 @@ class ReplayTab:
         rows = [WarningRow(code=warning.code, summary=f"event_id={warning.event_id}", detail=warning.detail) for warning in self.warnings[:500]]
         self.warning_table.set_rows(rows)
         if dpg.does_item_exist(self._tag("warning_count")):
-            dpg.set_value(self._tag("warning_count"), f"Warnings: {len(self.warnings)}")
+            dpg.set_value(self._tag("warning_count"), f"경고: {len(self.warnings)}")
             dpg.configure_item(self._tag("warning_count"), color=(255, 100, 100) if self.warnings else (120, 220, 140))
         if dpg.does_item_exist(self._tag("warning_hint")):
             if self.warnings:
                 first = self.warnings[0]
-                dpg.set_value(self._tag("warning_hint"), f"First warning: event_id={first.event_id} | {first.code}\n{first.detail}")
+                dpg.set_value(self._tag("warning_hint"), f"첫 경고: event_id={first.event_id} | {first.code}\n{first.detail}")
             else:
-                dpg.set_value(self._tag("warning_hint"), "No anomaly detected")
+                dpg.set_value(self._tag("warning_hint"), "이상 징후가 없습니다")
 
     def current_event(self) -> EventRow | None:
         if self.state_builder is None or not self.state_builder.events:
@@ -358,25 +371,25 @@ class ReplayTab:
         self.zone_renderer.render(self.state_builder.current_pitch_tracking(pitch))
 
     def render_empty_state(self) -> None:
-        self.loaded_game_card.set_text("Load a game to inspect replay data.")
+        self.loaded_game_card.set_text("경기를 불러오면 리플레이 데이터를 확인할 수 있습니다.")
         if dpg.does_item_exist(self._tag("event_detail")):
-            dpg.set_value(self._tag("event_detail"), "Select a game and load it to inspect event detail.")
-        self.event_nav.set_summary("No event data")
-        self.pa_nav.set_summary("No plate appearance data")
-        self.inning_nav.set_summary("No inning data")
-        self.pitch_nav.set_summary("No pitch data")
+            dpg.set_value(self._tag("event_detail"), "경기를 선택하고 불러오면 이벤트 상세를 확인할 수 있습니다.")
+        self.event_nav.set_summary("이벤트 데이터 없음")
+        self.pa_nav.set_summary("타석 데이터 없음")
+        self.inning_nav.set_summary("이닝 데이터 없음")
+        self.pitch_nav.set_summary("투구 데이터 없음")
         self.field_renderer.draw_background()
         self.zone_renderer.render(None)
 
     def _update_loaded_game_summary(self) -> None:
         if self.state_builder is None:
-            self.loaded_game_card.set_text("No game loaded")
+            self.loaded_game_card.set_text("불러온 경기가 없습니다")
             return
         dataset = self.state_builder.dataset
         self.loaded_game_card.set_text(
-            f"game_id={dataset.context.game_id}\n"
-            f"{dataset.context.away_team_name} vs {dataset.context.home_team_name}\n"
-            f"events={len(dataset.events)} pitches={len(dataset.pitches)} pas={len(dataset.plate_appearances)} innings={len(dataset.innings)}"
+            f"경기 ID={dataset.context.game_id}\n"
+            f"{dataset.context.away_team_name} 대 {dataset.context.home_team_name}\n"
+            f"이벤트={len(dataset.events)} 투구={len(dataset.pitches)} 타석={len(dataset.plate_appearances)} 이닝={len(dataset.innings)}"
         )
 
     def _update_focus_detail(self, event: EventRow, state: DerivedState, participants) -> None:
@@ -386,20 +399,20 @@ class ReplayTab:
             (2, state.b2_occ, state.b2_name),
             (3, state.b3_occ, state.b3_name),
         ):
-            base_parts.append(f"{base_no}B {runner_name or '-'}" if occupied else f"{base_no}B empty")
+            base_parts.append(f"{base_no}루 {runner_name or '-'}" if occupied else f"{base_no}루 비어 있음")
         detail = (
-            f"fielding: {participants.fielding_team_name} | batting: {participants.batting_team_name}\n"
-            f"event={event.event_category or '-'} | event_id={event.event_id} | seq={event.event_seq_game}\n"
-            f"count={state.balls}-{state.strikes}, outs={state.outs}\n"
-            f"bases: {' | '.join(base_parts)}\n"
-            f"text: {event.text or '-'}"
+            f"수비: {participants.fielding_team_name} | 공격: {participants.batting_team_name}\n"
+            f"이벤트={self._event_category_label(event.event_category)} | event_id={event.event_id} | seq={event.event_seq_game}\n"
+            f"카운트={state.balls}-{state.strikes}, 아웃={state.outs}\n"
+            f"주자: {' | '.join(base_parts)}\n"
+            f"문구: {event.text or '-'}"
         )
         if dpg.does_item_exist(self._tag("event_detail")):
             dpg.set_value(self._tag("event_detail"), detail)
 
     def _update_navigation_texts(self, event: EventRow) -> None:
         self.event_nav.set_summary(
-            f"{event.event_category or '-'} {self.event_idx + 1}/{len(self.state_builder.events)}\n{(event.text or '(no text)')[:72]}"
+            f"{self._event_category_label(event.event_category)} {self.event_idx + 1}/{len(self.state_builder.events)}\n{(event.text or '(문구 없음)')[:72]}"
         )
         self.event_nav.set_enabled(
             prev_enabled=self.event_idx > 0,
@@ -408,8 +421,8 @@ class ReplayTab:
         if self.navigation.pitch_items:
             pitch = self.navigation.pitch_items[self.pitch_idx].pitch
             self.pitch_nav.set_summary(
-                f"pitch {self.pitch_idx + 1}/{len(self.navigation.pitch_items)}\n"
-                f"num={pitch.pitch_num or '-'} | {pitch.pitch_type_text or '-'} | {pitch.speed_kph or '-'}km/h\n"
+                f"투구 {self.pitch_idx + 1}/{len(self.navigation.pitch_items)}\n"
+                f"번호={pitch.pitch_num or '-'} | {pitch.pitch_type_text or '-'} | {pitch.speed_kph or '-'}km/h\n"
                 f"{pitch.pitch_result or '-'}"
             )
             self.pitch_nav.set_enabled(
@@ -417,29 +430,29 @@ class ReplayTab:
                 next_enabled=self.pitch_idx < len(self.navigation.pitch_items) - 1,
             )
         else:
-            self.pitch_nav.set_summary("No pitch data")
+            self.pitch_nav.set_summary("투구 데이터 없음")
             self.pitch_nav.set_enabled(prev_enabled=False, next_enabled=False)
         if self.navigation.pa_items:
             pa_item = self.navigation.pa_items[self.pa_idx]
             batter_name = self.state_builder.get_player_name(pa_item.pa.batter_id, f"pa_id={pa_item.pa.pa_id}")
             self.pa_nav.set_summary(
-                f"pa {self.pa_idx + 1}/{len(self.navigation.pa_items)} | {self.state_builder.format_inning_label(pa_item.pa.inning_no, pa_item.pa.half)} | {batter_name}\n"
+                f"타석 {self.pa_idx + 1}/{len(self.navigation.pa_items)} | {self.state_builder.format_inning_label(pa_item.pa.inning_no, pa_item.pa.half)} | {batter_name}\n"
                 f"{pa_item.display_result_text}"
             )
             self.pa_nav.set_enabled(prev_enabled=self.pa_idx > 0, next_enabled=self.pa_idx < len(self.navigation.pa_items) - 1)
         else:
-            self.pa_nav.set_summary("No plate appearance data")
+            self.pa_nav.set_summary("타석 데이터 없음")
             self.pa_nav.set_enabled(prev_enabled=False, next_enabled=False)
         if self.navigation.inning_items:
             inning_item = self.navigation.inning_items[self.inning_idx]
             self.inning_nav.set_summary(
                 f"{self.state_builder.format_inning_label(inning_item.inning.inning_no, inning_item.inning.half)} {self.inning_idx + 1}/{len(self.navigation.inning_items)}\n"
-                f"runs={inning_item.runs_scored or 0}"
+                f"득점={inning_item.runs_scored or 0}"
             )
             self.inning_nav.set_enabled(
                 prev_enabled=self.inning_idx > 0,
                 next_enabled=self.inning_idx < len(self.navigation.inning_items) - 1,
             )
         else:
-            self.inning_nav.set_summary("No inning data")
+            self.inning_nav.set_summary("이닝 데이터 없음")
             self.inning_nav.set_enabled(prev_enabled=False, next_enabled=False)

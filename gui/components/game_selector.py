@@ -20,11 +20,11 @@ class GameSelector:
 
     def build(self, *, on_load: Callable[[], None], on_refresh: Callable[[], None] | None = None) -> None:
         with dpg.group(horizontal=True):
-            dpg.add_text("Game")
+            dpg.add_text("경기")
             dpg.add_combo(tag=self.combo_tag, items=[], width=self.width)
-            dpg.add_button(label="Load", width=80, callback=lambda: on_load())
+            dpg.add_button(label="불러오기", width=80, callback=lambda: on_load())
             if on_refresh is not None:
-                dpg.add_button(label="Refresh", width=80, callback=lambda: on_refresh())
+                dpg.add_button(label="새로고침", width=80, callback=lambda: on_refresh())
 
     def set_games(self, games: list[GameOption]) -> None:
         labels = [game.label for game in games]
