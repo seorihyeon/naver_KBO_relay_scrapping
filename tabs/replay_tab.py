@@ -7,19 +7,12 @@ import dearpygui.dearpygui as dpg
 
 from gui.components import GameSelector, HorizontalToolbar, NavigatorPanel, SummaryCard, WarningTable
 from gui.components.warning_table import WarningRow
-from gui.replay import (
-    FieldOverlayRenderer,
-    ReplayAnomalyDetector,
-    ReplayNavigationModel,
-    ReplayNavigationModelBuilder,
-    ReplayRepository,
-    ReplayStateBuilder,
-    StrikeZoneRenderer,
-)
-from gui.replay.models import DerivedState, EventRow
-from gui.replay.roster import build_roster_context
+from core.replay import ReplayNavigationModel, ReplayStateBuilder
+from core.replay.models import DerivedState, EventRow
+from gui.replay_renderers import FieldOverlayRenderer, StrikeZoneRenderer
 from gui.state import AppState
 from gui.tags import TagNamespace
+from services.replay_service import ReplayLoadRequest, ReplayService
 
 
 @dataclass
@@ -74,10 +67,10 @@ class ReplayTab:
         self.inning_nav = NavigatorPanel(self.namespace.child("inning_nav"), title="이닝")
         self.pitch_nav = NavigatorPanel(self.namespace.child("pitch_nav"), title="투구")
         self.warning_table = WarningTable(self.namespace.child("warnings"), height=120)
-        self.repository: ReplayRepository | None = None
+        self.replay_service = ReplayService()
         self.state_builder: ReplayStateBuilder | None = None
         self.navigation: ReplayNavigationModel = ReplayNavigationModel()
-        self.warning_detector = ReplayAnomalyDetector()
+        self.warning_detector = self.replay_service.anomaly_detector
         self.warnings = []
         self.event_idx = 0
         self.pitch_idx = 0
@@ -236,15 +229,21 @@ class ReplayTab:
             self.state.set_status("warn", "리플레이 불러오기 실패", "먼저 경기를 선택하세요.", source=self.label)
             return
         selected_game = match[0]
-        self.repository = ReplayRepository(self.state.conn)
+        request = ReplayLoadRequest(
+            conn=self.state.conn,
+            game_id=selected_game.game_id,
+            strike_zone_rules=dict(self.state.strike_zone_rules),
+        )
         self.state.set_game_selection(selected_game.game_id)
         self.state.set_status("info", "리플레이 경기 불러오는 중", selected_game.label, source=self.label, append=False)
         try:
-            dataset = self.repository.load_game(selected_game.game_id)
-            roster_context = build_roster_context(dataset)
-            self.state_builder = ReplayStateBuilder(self.state, dataset, roster_context)
-            self.navigation = ReplayNavigationModelBuilder(self.state_builder).build()
-            self.warnings = self.warning_detector.detect(dataset.events)
+            result = self.replay_service.load_game(request)
+            if result.session is None:
+                raise RuntimeError("replay session was not prepared")
+            dataset = result.session.dataset
+            self.state_builder = result.session.state_builder
+            self.navigation = result.session.navigation
+            self.warnings = list(result.session.warnings)
             self.event_idx = self.pitch_idx = self.pa_idx = self.inning_idx = 0
             self._update_loaded_game_summary()
             self.refresh_warning_panel()

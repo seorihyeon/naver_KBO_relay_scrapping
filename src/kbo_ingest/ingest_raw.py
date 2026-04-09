@@ -8,7 +8,7 @@ from typing import Any
 import psycopg
 from psycopg.types.json import Json
 
-from common_utils import first_non_empty, to_int
+from .common_utils import first_non_empty, to_int
 from .game_json import load_game_payload
 
 

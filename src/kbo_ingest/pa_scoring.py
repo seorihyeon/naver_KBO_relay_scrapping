@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Iterable, Mapping
 
-from common_utils import to_int
+from .common_utils import to_int
 
 
 BATTER_STAT_KEYS = (

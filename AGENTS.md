@@ -59,7 +59,7 @@ When changing correction, normalization, or relay-edit logic, preserve automatic
 
 ### 3) Validation is a core product feature
 
-`check_data.validate_game()` is not just a helper; it is part of the product.
+`src.kbo_ingest.game_validation.validate_game()` is not just a helper; it is part of the product.
 Do not weaken validation just to make broken data pass.
 
 Prefer fixing the source, correction flow, or normalization logic instead of muting checks.
@@ -145,7 +145,7 @@ Do not merge them into one bucket.
 
 Also review:
 
-- `check_data.py`
+- `src/kbo_ingest/game_validation.py`
 - `src/kbo_ingest/game_json.py`
 - `src/kbo_ingest/normalize_game.py`
 - `src/kbo_ingest/pa_scoring.py`
@@ -166,19 +166,19 @@ Run the smallest meaningful verification set for your change.
 ### JSON / schema / correction work
 
 ```bash
-python check_data.py games
+python -m scripts.validate_game_json games
 ```
 
 Migration dry-run:
 
 ```bash
-python migrate_game_json.py games
+python -m scripts.migrate_game_json games
 ```
 
 In-place migration with backup / patch generation:
 
 ```bash
-python migrate_game_json.py games --in-place
+python -m scripts.migrate_game_json games --in-place
 ```
 
 ### GUI / replay refactors

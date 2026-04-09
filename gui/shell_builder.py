@@ -3,7 +3,7 @@ from functools import partial
 
 import dearpygui.dearpygui as dpg
 
-from dpg_utils import bind_korean_font
+from gui.dpg_utils import bind_korean_font
 from gui.tags import GLOBAL_TAGS
 
 

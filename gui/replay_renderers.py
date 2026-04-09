@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import dearpygui.dearpygui as dpg
 
-from .models import DerivedState, EventParticipants, EventRow, PitchContext
+from core.replay.models import DerivedState, EventParticipants, EventRow, PitchContext
 
 
 @dataclass

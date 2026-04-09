@@ -6,10 +6,10 @@ from typing import Callable
 import dearpygui.dearpygui as dpg
 
 from gui.components import FileSelector, HorizontalToolbar, LogPanel, ProgressPanel, SummaryCard
-from gui.ingestion_service import DatabaseService, IngestionService
 from gui.jobs import JobEvent, JobHandle, JobRunner, JobSnapshot
 from gui.state import AppState
 from gui.tags import GLOBAL_TAGS, TagNamespace
+from services.ingestion_service import DatabaseService, IngestionService
 
 
 class IngestionTab:

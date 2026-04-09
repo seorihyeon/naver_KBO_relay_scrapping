@@ -6,7 +6,7 @@ import pytest
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from check_data import (
+from src.kbo_ingest.game_validation import (
     build_batter_stats_from_relay,
     build_pitcher_stats_from_relay,
     extract_record_batters,
@@ -90,7 +90,10 @@ def make_pitcher_change(seqno: int, *, from_pitcher: str, to_pitcher: str, balls
 
 
 def load_payload(path_text: str) -> dict:
-    return json.loads(Path(path_text).read_text(encoding="utf-8"))
+    path = Path(path_text)
+    if not path.exists():
+        pytest.skip(f"실데이터 fixture가 없어 건너뜁니다: {path_text}")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_foul_bunt_third_strike_context_counts_as_strikeout():
@@ -305,19 +308,12 @@ def test_batter_and_pitcher_credit_owners_are_resolved_independently():
 @pytest.mark.parametrize(
     ("path_text", "side", "player_id", "stat_names"),
     [
-        ("games/2025/20250913WOHH02025.json", "away", "69332", ("so",)),
-        ("games/2024/20240625NCWO02024.json", "home", "62332", ("so",)),
-        ("games/2024/20240502WOLT02024.json", "away", "62332", ("so",)),
-        ("games/2025/20250517WONC22025.json", "away", "62332", ("so",)),
-        ("games/2025/20250529LTSS02025.json", "home", "69418", ("so",)),
-        ("games/2025/20250919LTNC02025.json", "home", "66606", ("ab", "so")),
-        ("games/2025/20250919LTNC02025.json", "home", "67905", ("ab", "so")),
-        ("games/2025/20250406HHSS02025.json", "away", "50704", ("ab", "so")),
-        ("games/2025/20250406HHSS02025.json", "away", "66657", ("ab", "so")),
-        ("games/2024/20240430SKHH02024.json", "home", "50704", ("ab", "so")),
-        ("games/2024/20240430SKHH02024.json", "home", "54730", ("ab", "so")),
-        ("games/2024/20240623HHHT22024.json", "home", "62947", ("ab",)),
-        ("games/2025/20250725SKHH02025.json", "home", "54795", ("ab",)),
+        ("example/20250725WONC02025.json", "away", "69332", ("ab", "so")),
+        ("example/20250816SSLT02025.json", "away", "69418", ("ab", "so")),
+        ("example/20251004SKNC02025.json", "home", "66606", ("ab", "so")),
+        ("example/20250409NCKT02025.json", "away", "67905", ("ab", "so")),
+        ("example/20250920HHKT02025.json", "away", "54795", ("ab", "so")),
+        ("example/20250614LTSK02025.json", "home", "50854", ("ab", "hit", "so")),
     ],
 )
 def test_reported_batter_regressions_match_record_totals(path_text: str, side: str, player_id: str, stat_names: tuple[str, ...]):
@@ -332,10 +328,10 @@ def test_reported_batter_regressions_match_record_totals(path_text: str, side: s
 
 
 def test_reported_pitcher_credit_regression_matches_record_totals():
-    payload = load_payload("games/2024/20240407KTLG02024.json")
+    payload = load_payload("example/20240724WOOB02024.json")
     relay_stats = build_pitcher_stats_from_relay(payload["relay"])
     record_stats = extract_record_pitchers(payload["record"]["pitcher"])
 
-    assert relay_stats["away"]["69068"]["bb"] == record_stats["away"]["69068"]["bb"]
-    assert relay_stats["away"]["69068"]["bbhp"] == record_stats["away"]["69068"]["bbhp"]
-    assert relay_stats["away"]["66047"]["bb"] == record_stats["away"]["66047"]["bb"]
+    assert relay_stats["away"]["64350"]["bb"] == record_stats["away"]["64350"]["bb"]
+    assert relay_stats["away"]["64350"]["bbhp"] == record_stats["away"]["64350"]["bbhp"]
+    assert relay_stats["away"]["69360"]["bb"] == record_stats["away"]["69360"]["bb"]

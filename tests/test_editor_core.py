@@ -4,9 +4,9 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from migrate_game_json import migrate_one_file
 from src.kbo_ingest.editor_core import GameEditorSession
 from src.kbo_ingest.game_json import pretty_game_json
+from services.json_migration_service import migrate_one_file
 
 
 def make_editor_payload() -> dict:

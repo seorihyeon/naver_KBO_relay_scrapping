@@ -9,14 +9,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 import dearpygui.dearpygui as dpg
+from services.common import GameOption
 
 from .tags import GLOBAL_TAGS
-
-
-@dataclass(frozen=True)
-class GameOption:
-    game_id: int
-    label: str
 
 
 @dataclass

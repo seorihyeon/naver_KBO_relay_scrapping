@@ -1,3 +1,5 @@
+"""PostgreSQL adapters for game selection and replay dataset loading."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,7 +7,7 @@ from typing import Any
 
 import psycopg
 
-from .models import (
+from core.replay.models import (
     EventRow,
     GameContext,
     InningRow,
@@ -16,6 +18,7 @@ from .models import (
     RosterEntryRow,
     SubstitutionRow,
 )
+from services.common import GameOption
 
 
 def _safe_int(value: Any) -> int | None:
@@ -29,21 +32,31 @@ def _parse_batting_side(raw_text: str | None) -> str | None:
     if not raw_text:
         return None
     text = str(raw_text)
-    if "우" in text:
-        return "R"
-    if "좌" in text:
-        return "L"
-    if "양" in text:
+    if "\uC591\uD0C0" in text:
         return "S"
+    if "\uC88C\uD0C0" in text:
+        return "L"
+    if "\uC6B0\uD0C0" in text:
+        return "R"
     return None
 
 
-@dataclass
-class ReplayRepository:
-    conn: psycopg.Connection
-    _pa_event_columns: set[str] | None = None
+class PostgresConnectionFactory:
+    """Creates autocommit PostgreSQL connections for service workflows."""
 
-    def list_games(self, *, limit: int = 500, search: str | None = None, offset: int = 0) -> list[tuple[int, str]]:
+    def connect(self, dsn: str) -> psycopg.Connection:
+        conn = psycopg.connect(dsn)
+        conn.autocommit = True
+        return conn
+
+
+@dataclass
+class GameCatalogRepository:
+    """Reads selectable game metadata for GUI lookup controls."""
+
+    conn: psycopg.Connection
+
+    def list_games(self, *, limit: int = 500, search: str | None = None, offset: int = 0) -> list[GameOption]:
         where_sql = ""
         params: list[Any] = []
         if search:
@@ -69,7 +82,16 @@ class ReplayRepository:
         """
         with self.conn.cursor() as cur:
             cur.execute(query, params)
-            return [(row[0], row[1]) for row in cur.fetchall()]
+            rows = cur.fetchall()
+        return [GameOption(game_id=row[0], label=row[1]) for row in rows]
+
+
+@dataclass
+class ReplayRepository:
+    """Loads replay datasets from PostgreSQL without any GUI dependency."""
+
+    conn: psycopg.Connection
+    _pa_event_columns: set[str] | None = None
 
     def get_pa_event_columns(self) -> set[str]:
         if self._pa_event_columns is None:

@@ -5,8 +5,8 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import gui.collection_service as collection_service_module
-from gui.collection_service import CollectionRequest, CollectionService, CollectionTarget
+import services.collection_service as collection_service_module
+from services.collection_service import CollectionRequest, CollectionService, CollectionTarget
 
 
 class DummyContext:
@@ -105,9 +105,9 @@ def test_run_saves_successful_collection_to_normal_path(tmp_path, monkeypatch):
     monkeypatch.setattr(collection_service_module, "NaverScraper", fake_scraper)
     monkeypatch.setattr(collection_service_module, "minimize_game_payload", _fake_minimize_game_payload)
     monkeypatch.setattr(
-        collection_service_module.check_data,
+        collection_service_module.ValidationService,
         "validate_game",
-        lambda payload: {"ok": True, "issues": [], "warnings": []},
+        lambda self, payload: {"ok": True, "issues": [], "warnings": []},
     )
 
     result = CollectionService().run(_make_request(tmp_path, [target]), DummyContext())
@@ -134,9 +134,9 @@ def test_run_saves_validation_failure_as_anomaly_and_excludes_retry_target(tmp_p
     monkeypatch.setattr(collection_service_module, "NaverScraper", fake_scraper)
     monkeypatch.setattr(collection_service_module, "minimize_game_payload", _fake_minimize_game_payload)
     monkeypatch.setattr(
-        collection_service_module.check_data,
+        collection_service_module.ValidationService,
         "validate_game",
-        lambda payload: {"ok": False, "issues": ["relay mismatch"], "warnings": ["scoreboard warning"]},
+        lambda self, payload: {"ok": False, "issues": ["relay mismatch"], "warnings": ["scoreboard warning"]},
     )
 
     result = CollectionService().run(_make_request(tmp_path, [target]), DummyContext())
@@ -167,9 +167,9 @@ def test_run_logs_failed_collection_and_includes_retry_target(tmp_path, monkeypa
     monkeypatch.setattr(collection_service_module, "NaverScraper", fake_scraper)
     monkeypatch.setattr(collection_service_module, "minimize_game_payload", _fake_minimize_game_payload)
     monkeypatch.setattr(
-        collection_service_module.check_data,
+        collection_service_module.ValidationService,
         "validate_game",
-        lambda payload: {"ok": True, "issues": [], "warnings": []},
+        lambda self, payload: {"ok": True, "issues": [], "warnings": []},
     )
 
     result = CollectionService().run(_make_request(tmp_path, [target], retry_count=2), DummyContext())
@@ -200,9 +200,9 @@ def test_run_reuses_existing_valid_file_as_skipped(tmp_path, monkeypatch):
     monkeypatch.setattr(collection_service_module, "NaverScraper", fake_scraper)
     monkeypatch.setattr(collection_service_module, "minimize_game_payload", _fake_minimize_game_payload)
     monkeypatch.setattr(
-        collection_service_module.check_data,
+        collection_service_module.ValidationService,
         "validate_game",
-        lambda payload: {"ok": bool(payload.get("cached")), "issues": [], "warnings": []},
+        lambda self, payload: {"ok": bool(payload.get("cached")), "issues": [], "warnings": []},
     )
 
     result = CollectionService().run(_make_request(tmp_path, [target]), DummyContext())
@@ -232,12 +232,12 @@ def test_failed_targets_only_include_actual_failures_for_retry(tmp_path, monkeyp
     monkeypatch.setattr(collection_service_module, "NaverScraper", fake_scraper)
     monkeypatch.setattr(collection_service_module, "minimize_game_payload", _fake_minimize_game_payload)
 
-    def fake_validate(payload):
+    def fake_validate(self, payload):
         if payload["game_id"] == "20260408SSWO02026":
             return {"ok": False, "issues": ["record mismatch"], "warnings": []}
         return {"ok": True, "issues": [], "warnings": []}
 
-    monkeypatch.setattr(collection_service_module.check_data, "validate_game", fake_validate)
+    monkeypatch.setattr(collection_service_module.ValidationService, "validate_game", fake_validate)
 
     result = CollectionService().run(
         _make_request(tmp_path, [success_target, anomaly_target, failed_target], retry_count=1),

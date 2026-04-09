@@ -3,8 +3,8 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from gui.replay import ReplayAnomalyDetector, ReplayNavigationModelBuilder, ReplayStateBuilder
-from gui.replay.models import (
+from core.replay import ReplayAnomalyDetector, ReplayNavigationModelBuilder, ReplayStateBuilder, StrikeZoneRuleBook
+from core.replay.models import (
     EventRow,
     GameContext,
     InningRow,
@@ -14,7 +14,7 @@ from gui.replay.models import (
     ReplayDataset,
     RosterEntryRow,
 )
-from gui.replay.roster import build_roster_context
+from core.replay.roster import build_roster_context
 from gui.state import AppState
 
 
@@ -158,7 +158,7 @@ def test_replay_state_builder_resolves_runner_and_pitch_context():
     dataset = make_dataset()
     state = AppState(config={})
     roster_context = build_roster_context(dataset)
-    builder = ReplayStateBuilder(state, dataset, roster_context)
+    builder = ReplayStateBuilder(dataset, roster_context, StrikeZoneRuleBook(dict(state.strike_zone_rules)))
 
     resolved = builder.get_resolved_game_state(1)
     pitch_context = builder.current_pitch_tracking(dataset.pitches[0])
@@ -174,7 +174,7 @@ def test_replay_navigation_builder_creates_focus_models():
     dataset = make_dataset()
     state = AppState(config={})
     roster_context = build_roster_context(dataset)
-    builder = ReplayStateBuilder(state, dataset, roster_context)
+    builder = ReplayStateBuilder(dataset, roster_context, StrikeZoneRuleBook(dict(state.strike_zone_rules)))
 
     navigation = ReplayNavigationModelBuilder(builder).build()
 

@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any
 
-from common_utils import to_int
+from .common_utils import to_int
 
 from .game_json import CURRENT_GAME_STATE_FIELDS
 from .pa_scoring import score_relay_plate_appearances

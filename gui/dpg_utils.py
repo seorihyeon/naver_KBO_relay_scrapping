@@ -1,3 +1,5 @@
+"""DearPyGui 전용 공통 헬퍼 모음."""
+
 from __future__ import annotations
 
 import os

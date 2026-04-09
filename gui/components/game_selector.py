@@ -5,8 +5,8 @@ from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
+from services.common import GameOption
 from gui.tags import TagNamespace
-from gui.state import GameOption
 
 
 @dataclass

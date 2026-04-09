@@ -1,3 +1,5 @@
+"""PostgreSQL 적재용 워크플로를 묶은 서비스 모듈."""
+
 from __future__ import annotations
 
 import argparse
@@ -118,7 +120,7 @@ def command_legacy(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="KBO JSON -> PostgreSQL loader and QA runner")
     subparsers = parser.add_subparsers(dest="command")
 
@@ -165,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    parser = build_parser()
+    parser = build_cli_parser()
     args = parser.parse_args()
     if hasattr(args, "func"):
         return args.func(args)
@@ -173,7 +175,3 @@ def main() -> int:
         return command_legacy(args)
     parser.print_help()
     return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

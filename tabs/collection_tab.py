@@ -7,11 +7,11 @@ from typing import Callable
 
 import dearpygui.dearpygui as dpg
 
-from gui.collection_service import CollectionRequest, CollectionService, CollectionTarget
 from gui.components import DatePicker, FileSelector, HorizontalToolbar, LogPanel, ProgressPanel, SummaryCard
 from gui.jobs import JobEvent, JobHandle, JobResult, JobRunner, JobSnapshot
 from gui.state import AppState
 from gui.tags import TagNamespace
+from services.collection_service import CollectionRequest, CollectionService, CollectionTarget
 
 
 @dataclass

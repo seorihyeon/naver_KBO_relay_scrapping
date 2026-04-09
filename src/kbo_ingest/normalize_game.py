@@ -14,7 +14,7 @@ except ModuleNotFoundError:  # pragma: no cover - test env fallback
     def Json(value: Any) -> Any:  # type: ignore[misc]
         return value
 
-from common_utils import first_non_empty, to_int
+from .common_utils import first_non_empty, to_int
 from .pa_scoring import score_scoring_events, scoring_event_from_mapping
 
 

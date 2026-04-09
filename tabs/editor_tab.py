@@ -5,7 +5,7 @@ from typing import Any
 
 import dearpygui.dearpygui as dpg
 
-from dpg_utils import prompt_native_text
+from gui.dpg_utils import prompt_native_text
 from gui.components import HorizontalToolbar
 from gui.state import AppState
 from src.kbo_ingest.correction_engine import (

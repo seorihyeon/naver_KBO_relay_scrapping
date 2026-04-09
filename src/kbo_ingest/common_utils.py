@@ -1,3 +1,5 @@
+"""정규화/적재 로직에서 함께 쓰는 순수 값 변환 유틸리티."""
+
 from __future__ import annotations
 
 from typing import Any

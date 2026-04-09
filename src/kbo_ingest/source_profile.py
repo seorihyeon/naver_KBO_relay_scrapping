@@ -4,14 +4,14 @@ import hashlib
 from pathlib import Path
 from typing import Any
 
-from check_data import (
+from .common_utils import to_int
+from .game_validation import (
     extract_lineup_players,
     extract_record_batters,
     extract_record_pitchers,
     get_final_scoreboard_from_relay,
     validate_game as validate_source_json,
 )
-from common_utils import to_int
 
 from .game_json import load_game_payload
 from .ingest_raw import _parse_game_date, _to_bool_flag, _iter_relay_blocks

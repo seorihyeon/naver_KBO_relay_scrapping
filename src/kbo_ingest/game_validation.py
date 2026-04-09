@@ -1,3 +1,4 @@
+"""제품 검증 규칙을 모아 둔 순수 JSON 검증 모듈."""
 
 import argparse
 import json
@@ -5,9 +6,9 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from common_utils import to_int
-from src.kbo_ingest.game_json import load_game_payload, minimize_game_payload
-from src.kbo_ingest.pa_scoring import classify_terminal_pa_text, score_relay_plate_appearances
+from .common_utils import to_int
+from .game_json import load_game_payload, minimize_game_payload
+from .pa_scoring import classify_terminal_pa_text, score_relay_plate_appearances
 
 
 def ip_str_to_outs(ip: Any) -> int:
@@ -771,7 +772,3 @@ def main() -> int:
     print(f"  - 실패: {fail_count}")
 
     return 0 if fail_count == 0 else 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

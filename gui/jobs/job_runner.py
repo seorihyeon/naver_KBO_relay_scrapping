@@ -45,7 +45,7 @@ class JobSnapshot:
     cancellable: bool = True
     latest_message: str = ""
     logs: list[JobLogEntry] = field(default_factory=list)
-    result: JobResult | None = None
+    result: Any | None = None
     error_message: str | None = None
 
     @property
@@ -81,7 +81,7 @@ class JobContext:
         payload = {"progress": max(0.0, min(1.0, float(progress))), "message": message}
         self.emit("progress", payload)
 
-    def set_result(self, result: JobResult) -> None:
+    def set_result(self, result: Any) -> None:
         self.emit("result", result)
 
     def is_cancelled(self) -> bool:
@@ -93,7 +93,7 @@ class JobContext:
 
 
 JobListener = Callable[[JobEvent, JobSnapshot], None]
-JobWorker = Callable[[JobContext], JobResult | None]
+JobWorker = Callable[[JobContext], Any | None]
 
 
 class JobRunner:

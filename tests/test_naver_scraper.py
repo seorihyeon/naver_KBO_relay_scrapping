@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from web_interface import NaverScraper
+from infrastructure.naver_scraper import NaverScraper
 
 
 def test_normalize_game_url_with_relative_path():
@@ -47,7 +47,7 @@ def test_throttle_api_request_waits_for_remaining_interval():
     scraper.api_request_interval = 0.25
     scraper._last_api_request_finished_at = 10.0
 
-    with patch("web_interface.time.monotonic", return_value=10.1), patch("web_interface.time.sleep") as sleep_mock:
+    with patch("infrastructure.naver_scraper.time.monotonic", return_value=10.1), patch("infrastructure.naver_scraper.time.sleep") as sleep_mock:
         scraper._throttle_api_request()
 
     sleep_mock.assert_called_once()
@@ -59,7 +59,7 @@ def test_throttle_api_request_skips_sleep_when_interval_elapsed():
     scraper.api_request_interval = 0.25
     scraper._last_api_request_finished_at = 10.0
 
-    with patch("web_interface.time.monotonic", return_value=10.4), patch("web_interface.time.sleep") as sleep_mock:
+    with patch("infrastructure.naver_scraper.time.monotonic", return_value=10.4), patch("infrastructure.naver_scraper.time.sleep") as sleep_mock:
         scraper._throttle_api_request()
 
     sleep_mock.assert_not_called()

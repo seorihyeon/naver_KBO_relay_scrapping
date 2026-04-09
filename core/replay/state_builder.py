@@ -4,8 +4,6 @@ import math
 import re
 from dataclasses import dataclass
 
-from gui.state import AppState
-
 from .models import (
     DerivedState,
     EventParticipants,
@@ -17,6 +15,7 @@ from .models import (
     RosterContext,
 )
 from .roster import get_lineup_snapshot
+from .strike_zone import StrikeZoneRuleBook
 
 
 BATTER_INTRO_PATTERN = re.compile(r"^\d+번타자\s+")
@@ -27,9 +26,9 @@ OUT_PATTERN = re.compile(r"(?P<src>[123])루주자\s*(?P<name>[^ :]+)\s*:\s*아�
 
 @dataclass
 class ReplayStateBuilder:
-    app_state: AppState
     dataset: ReplayDataset
     roster_context: RosterContext
+    strike_zone_rule_book: StrikeZoneRuleBook
 
     def __post_init__(self) -> None:
         self.events = self.dataset.events
@@ -103,7 +102,7 @@ class ReplayStateBuilder:
         fallback_bottom: float | None = None,
     ) -> dict[str, float | int | None]:
         height_cm = self.roster_context.player_height_by_id.get(batter_id or "")
-        rule = self.app_state.get_strike_zone_rule(self.get_game_year())
+        rule = self.strike_zone_rule_book.get_rule(self.get_game_year())
         if height_cm:
             top_ft = self.cm_to_ft(height_cm * float(rule["top_pct"]))
             bottom_ft = self.cm_to_ft(height_cm * float(rule["bottom_pct"]))

@@ -1,8 +1,10 @@
+"""Pure replay-domain models and state derivation logic."""
+
 from .anomaly import ReplayAnomalyDetector
 from .models import (
     DerivedState,
-    EventRow,
     EventParticipants,
+    EventRow,
     GameContext,
     InningNavigationItem,
     InningRow,
@@ -15,16 +17,16 @@ from .models import (
     RosterContext,
     WarningItem,
 )
-from .navigation import ReplayNavigationModel, ReplayNavigationModelBuilder
-from .renderers import FieldOverlayRenderer, StrikeZoneRenderer
-from .repository import ReplayRepository
+from .navigation import ReplayNavigationModel, ReplayNavigationModelBuilder, find_last_nav_index_at_or_before
+from .roster import build_roster_context, get_lineup_snapshot
 from .state_builder import ReplayStateBuilder
+from .strike_zone import DEFAULT_STRIKE_ZONE_RULES, StrikeZoneRuleBook
 
 __all__ = [
+    "DEFAULT_STRIKE_ZONE_RULES",
     "DerivedState",
-    "EventRow",
     "EventParticipants",
-    "FieldOverlayRenderer",
+    "EventRow",
     "GameContext",
     "InningNavigationItem",
     "InningRow",
@@ -37,9 +39,11 @@ __all__ = [
     "ReplayDataset",
     "ReplayNavigationModel",
     "ReplayNavigationModelBuilder",
-    "ReplayRepository",
     "ReplayStateBuilder",
     "RosterContext",
-    "StrikeZoneRenderer",
+    "StrikeZoneRuleBook",
     "WarningItem",
+    "build_roster_context",
+    "find_last_nav_index_at_or_before",
+    "get_lineup_snapshot",
 ]

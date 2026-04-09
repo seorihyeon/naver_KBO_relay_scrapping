@@ -9,8 +9,6 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-import check_data
-
 from .correction_engine import (
     build_offense_entry_options as engine_build_offense_entry_options,
     insert_event_template as engine_insert_event_template,
@@ -23,6 +21,7 @@ from .correction_engine import (
     summarize_plate_appearances,
     update_event_meaning as engine_update_event_meaning,
 )
+from .game_validation import validate_game
 from .game_json import CURRENT_GAME_STATE_FIELDS, load_game_payload, pretty_game_json
 
 
@@ -873,7 +872,7 @@ class GameEditorSession:
         return findings
 
     def validate(self) -> dict[str, Any]:
-        base = check_data.validate_game(self.payload)
+        base = validate_game(self.payload)
         relay_findings = self.scan_relay_issues()
         rebuild_findings = self.scan_auto_rebuild_drift()
         findings = [

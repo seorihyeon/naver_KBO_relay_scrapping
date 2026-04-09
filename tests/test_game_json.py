@@ -2,12 +2,19 @@ import json
 from pathlib import Path
 import sys
 
+import pytest
+
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-import check_data
-
 from src.kbo_ingest.game_json import minimize_game_payload, pretty_game_json
+from src.kbo_ingest.game_validation import validate_game
 from src.kbo_ingest.source_profile import build_source_profile
+
+
+def load_real_payload(path: Path) -> dict:
+    if not path.exists():
+        pytest.skip(f"실데이터 fixture가 없어 건너뜁니다: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def test_minimize_game_payload_strips_unused_fields():
@@ -85,9 +92,15 @@ def test_minimize_game_payload_strips_unused_fields():
     assert "era" not in minimized["record"]["pitcher"]["home"][0]
 
 
-def test_migrated_real_game_preserves_source_profile_counts(tmp_path: Path):
-    source_path = Path("games/2025/20250831NCSK02025.json")
-    raw_payload = json.loads(source_path.read_text(encoding="utf-8"))
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        Path("example/20240724WOOB02024.json"),
+        Path("example/20250409NCKT02025.json"),
+    ],
+)
+def test_migrated_real_game_preserves_source_profile_counts(tmp_path: Path, source_path: Path):
+    raw_payload = load_real_payload(source_path)
     migrated_payload = minimize_game_payload(raw_payload, file_path=source_path)
 
     migrated_path = tmp_path / source_path.name
@@ -102,10 +115,15 @@ def test_migrated_real_game_preserves_source_profile_counts(tmp_path: Path):
     assert migrated_profile["expected_batter_totals"] == raw_profile["expected_batter_totals"]
 
 
-def test_validate_game_accepts_minimized_real_payload():
-    source_path = Path("games/2024/20240724WOOB02024.json")
-    raw_payload = json.loads(source_path.read_text(encoding="utf-8"))
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        Path("example/20240724WOOB02024.json"),
+        Path("example/20250311LGLT02025.json"),
+    ],
+)
+def test_validate_game_accepts_minimized_real_payload(source_path: Path):
+    raw_payload = load_real_payload(source_path)
     migrated_payload = minimize_game_payload(raw_payload, file_path=source_path)
 
-    assert check_data.validate_game(migrated_payload) == check_data.validate_game(raw_payload)
-
+    assert validate_game(migrated_payload) == validate_game(raw_payload)

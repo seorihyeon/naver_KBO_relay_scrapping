@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 
-from check_data import classify_pa_text
+from src.kbo_ingest.game_validation import classify_pa_text
 from src.kbo_ingest.validation import TABLE_NAMES, _aggregate_table_expectations, _expected_pitch_tracking_gap
 
 
