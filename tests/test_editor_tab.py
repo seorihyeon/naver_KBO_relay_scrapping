@@ -500,6 +500,15 @@ def test_editor_tab_basic_mode_primary_components_render(tmp_path: Path):
         assert dpg.does_item_exist(tab._t("add_context_hint"))
         assert dpg.is_item_shown(tab._t("basic_mode_panel"))
         assert not dpg.is_item_shown(tab._t("advanced_mode_panel"))
+        assert dpg.is_item_shown(tab._t("game_info_tab"))
+        assert dpg.is_item_shown(tab._t("lineup_tab"))
+        assert dpg.is_item_shown(tab._t("record_tab"))
+        assert dpg.get_item_configuration(tab._t("relay_events"))["horizontal_scrollbar"] is True
+
+        tab._set_tab_value(tab._t("detail_tabs"), tab._t("lineup_tab"))
+        selected_before = dpg.get_value(tab._t("detail_tabs"))
+        tab.apply_editor_mode()
+        assert dpg.get_value(tab._t("detail_tabs")) == selected_before
     finally:
         dpg.destroy_context()
 
@@ -602,7 +611,8 @@ def test_editor_tab_basic_split_success_reassigns_segment_and_inserts_intro(tmp_
         assert events[0]["text"] == "4번타자 양의지"
         assert events[1]["batterRecord"]["pcode"] == "A2"
         assert events[1]["currentGameState"]["batter"] == "A2"
-        assert events[1]["text"].startswith("양의지 :")
+        assert events[1]["text"] == "헛스윙 스트라이크"
+        assert events[2]["text"] == "파울"
         assert events[3]["text"].startswith("양의지 :")
         assert tab.selected_event_ref == (0, 1, 0)
     finally:
@@ -673,7 +683,7 @@ def test_editor_tab_split_repairs_inferred_start_when_selected_segment_already_h
         events = relay_group[1]["textOptions"]
         assert events[0]["text"] == "4번타자 양의지"
         assert events[1]["currentGameState"]["batter"] == "A2"
-        assert events[1]["text"].startswith("양의지 :")
+        assert events[1]["text"] == "헛스윙 스트라이크"
     finally:
         dpg.destroy_context()
 
@@ -728,6 +738,7 @@ def test_editor_tab_add_pitch_with_blank_pts_pitch_id(tmp_path: Path):
         assert inserted["batterRecord"]["pcode"] == "A1"
         assert inserted["currentGameState"]["batter"] == "A1"
         assert inserted["pitchNum"] == 1
+        assert inserted["text"] == "타격"
         assert dpg.get_value(tab._t("basic_auto_preview_text"))
     finally:
         dpg.destroy_context()

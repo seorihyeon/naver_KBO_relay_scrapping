@@ -467,10 +467,7 @@ def build_event_template(
         if pts_pitch_id:
             event["ptsPitchId"] = pts_pitch_id
         label = _pitch_label(pitch_result, text)
-        if batter_id:
-            event["text"] = f"{_player_name(player_index, batter_id, batter_name)} : {label}"
-        else:
-            event["text"] = label
+        event["text"] = label
         return event
     if template_type == "bat_result":
         event["type"] = 13
@@ -896,7 +893,7 @@ def _set_event_state(event: JsonDict, state: JsonDict) -> None:
         event["batterRecord"] = {"pcode": batter_id}
 
 
-def rebuild_payload(payload: JsonDict, *, renumber_seq: bool = True, sync_record: bool = True) -> tuple[JsonDict, RebuildReport]:
+def _rebuild_payload_core(payload: JsonDict, *, renumber_seq: bool = True) -> tuple[JsonDict, RebuildReport, dict[str, PlayerInfo]]:
     rebuilt = copy.deepcopy(payload)
     relay = rebuilt.get("relay") or []
     player_index = build_player_index(rebuilt)
@@ -1019,18 +1016,7 @@ def rebuild_payload(payload: JsonDict, *, renumber_seq: bool = True, sync_record
                     changed = [key for key in CURRENT_GAME_STATE_FIELDS if before.get(key) != after.get(key)]
                     deltas.append(RebuildEventDelta(ref=EventRef(group_index, block_index, event_index), changed_fields=changed))
 
-    if sync_record:
-        _sync_record_tables(
-            rebuilt,
-            player_index=player_index,
-            batter_runs=batter_runs,
-            batter_rbi=batter_rbi,
-            pitcher_outs=pitcher_outs,
-            pitcher_runs=pitcher_runs,
-            batter_steals=batter_steals,
-        )
-
-    return rebuilt, RebuildReport(
+    report = RebuildReport(
         deltas=deltas,
         batter_runs=batter_runs,
         batter_rbi=batter_rbi,
@@ -1038,6 +1024,26 @@ def rebuild_payload(payload: JsonDict, *, renumber_seq: bool = True, sync_record
         pitcher_runs=pitcher_runs,
         batter_steals=batter_steals,
     )
+    return rebuilt, report, player_index
+
+
+def rebuild_payload(payload: JsonDict, *, renumber_seq: bool = True) -> tuple[JsonDict, RebuildReport]:
+    rebuilt, report, _player_index = _rebuild_payload_core(payload, renumber_seq=renumber_seq)
+    return rebuilt, report
+
+
+def rebuild_payload_with_record_sync(payload: JsonDict, *, renumber_seq: bool = True) -> tuple[JsonDict, RebuildReport]:
+    rebuilt, report, player_index = _rebuild_payload_core(payload, renumber_seq=renumber_seq)
+    _sync_record_tables(
+        rebuilt,
+        player_index=player_index,
+        batter_runs=report.batter_runs,
+        batter_rbi=report.batter_rbi,
+        pitcher_outs=report.pitcher_outs,
+        pitcher_runs=report.pitcher_runs,
+        batter_steals=report.batter_steals,
+    )
+    return rebuilt, report
 
 
 def _outs_to_innings_text(outs: int) -> str:
@@ -1475,7 +1481,12 @@ def _rewrite_batter_text(event: JsonDict, batter_id: str | None, batter_name: st
     if category == "intro":
         event["text"] = _intro_text(player_index, batter_id, batter_name)
         return
-    if category not in {"pitch", "bat_result"}:
+    if category == "pitch":
+        text = _event_text(event).strip()
+        detail = text.split(":", 1)[1].strip() if ":" in text else text
+        event["text"] = detail or _pitch_label(str(event.get("pitchResult") or "").strip() or None)
+        return
+    if category != "bat_result":
         return
     label = _player_name(player_index, batter_id, batter_name)
     if not label:

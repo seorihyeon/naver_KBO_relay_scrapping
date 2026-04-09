@@ -8,7 +8,10 @@ from typing import Any, Dict, List, Tuple
 
 from .common_utils import to_int
 from .game_json import load_game_payload, minimize_game_payload
-from .pa_scoring import classify_terminal_pa_text, score_relay_plate_appearances
+from .pa_scoring import classify_event, classify_terminal_pa_text, score_relay_plate_appearances
+
+
+BATTER_INTRO_RE = re.compile(r"^(?:\d+번타자|대타)\s+\S+")
 
 
 def ip_str_to_outs(ip: Any) -> int:
@@ -198,6 +201,93 @@ def classify_pa_text(text: str) -> Dict[str, int]:
         "so": so,
         "hbp": hbp,
     }
+
+
+def _relay_block_label(block: Dict[str, Any]) -> str:
+    inning_no = block.get("inn") or "?"
+    half = "초" if str(block.get("homeOrAway")) == "0" else "말"
+    return f"{inning_no}회{half}"
+
+
+def _is_batter_intro_text(text: str) -> bool:
+    return bool(BATTER_INTRO_RE.match((text or "").strip()))
+
+
+def _relay_event_category(event: Dict[str, Any]) -> str:
+    text = str(event.get("text") or "")
+    type_code = to_int(event.get("type"), None)
+    if _is_batter_intro_text(text):
+        return "intro"
+    if type_code in (13, 23):
+        return "bat_result"
+    if event.get("pitchNum") is not None or event.get("pitchResult") or event.get("ptsPitchId"):
+        return "pitch"
+    return classify_event(
+        text,
+        None,
+        None,
+        None,
+        event.get("playerChange"),
+        type_code,
+    )
+
+
+def find_relay_sequence_findings(relay: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    findings: List[Dict[str, Any]] = []
+
+    for group_index, inning in enumerate(relay or []):
+        for block_index, block in enumerate(inning or []):
+            terminal_event_index: int | None = None
+            for event_index, event in enumerate(block.get("textOptions") or []):
+                text = str(event.get("text") or "")
+                category = _relay_event_category(event)
+                if category == "intro":
+                    terminal_event_index = None
+                    continue
+
+                if terminal_event_index is not None:
+                    if category == "pitch":
+                        findings.append(
+                            {
+                                "severity": "error",
+                                "code": "merged_pa_pitch_after_terminal",
+                                "message": (
+                                    f"[relay] {_relay_block_label(block)} 이벤트 {terminal_event_index}->{event_index}: "
+                                    "타석 결과 뒤에 투구 이벤트가 이어져 타석이 합쳐진 것으로 보입니다."
+                                ),
+                                "location": {
+                                    "tab": "relay",
+                                    "group_index": group_index,
+                                    "block_index": block_index,
+                                    "event_index": event_index,
+                                },
+                            }
+                        )
+                        terminal_event_index = None
+                    elif category == "bat_result":
+                        findings.append(
+                            {
+                                "severity": "error",
+                                "code": "merged_pa_multiple_terminal",
+                                "message": (
+                                    f"[relay] {_relay_block_label(block)} 이벤트 {terminal_event_index}->{event_index}: "
+                                    "같은 타석 흐름에 타석 결과 이벤트가 두 번 나타나 타석이 합쳐진 것으로 보입니다."
+                                ),
+                                "location": {
+                                    "tab": "relay",
+                                    "group_index": group_index,
+                                    "block_index": block_index,
+                                    "event_index": event_index,
+                                },
+                            }
+                        )
+                        terminal_event_index = event_index
+                        continue
+
+                if category == "bat_result":
+                    terminal_event_index = event_index
+
+    return findings
 
 
 def build_batter_stats_from_relay(relay: List[List[Dict[str, Any]]]) -> Dict[str, Dict[str, Dict[str, int]]]:
@@ -668,6 +758,7 @@ def validate_game(game: Dict[str, Any]) -> Dict[str, Any]:
     relay_pitchers = collect_pitcher_codes_from_relay(relay)
     scoreboard = get_final_scoreboard_from_relay(relay)
     game_info = lineup_info["game_info"]
+    structured_findings = find_relay_sequence_findings(relay)
 
     i, w = check_game_info_vs_lineup(game_info, lineup_info)
     issues.extend(i)
@@ -698,11 +789,14 @@ def validate_game(game: Dict[str, Any]) -> Dict[str, Any]:
 
     issues.extend(check_pitchers_vs_batters(record_pits, record_bats))
     issues.extend(check_pitchers_vs_scoreboard(record_pits, scoreboard))
+    issues.extend(finding["message"] for finding in structured_findings if finding.get("severity") == "error")
+    warnings.extend(finding["message"] for finding in structured_findings if finding.get("severity") != "error")
 
     return {
         "ok": len(issues) == 0,
         "issues": issues,
         "warnings": warnings,
+        "structured_findings": structured_findings,
     }
 
 

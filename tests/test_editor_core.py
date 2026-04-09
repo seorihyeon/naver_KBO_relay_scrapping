@@ -4,6 +4,7 @@ import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
+from src.kbo_ingest.correction_engine import rebuild_payload_with_record_sync
 from src.kbo_ingest.editor_core import GameEditorSession
 from src.kbo_ingest.game_json import pretty_game_json
 from services.json_migration_service import migrate_one_file
@@ -232,6 +233,137 @@ def test_editor_session_still_flags_unexpected_multi_out_jump(tmp_path: Path):
     findings = session.scan_relay_issues()
 
     assert "state_jump:out" in {finding["code"] for finding in findings}
+
+
+def test_editor_session_validate_flags_pitch_after_terminal_as_merged_pa(tmp_path: Path):
+    payload = make_editor_payload()
+    for side in ("home", "away"):
+        payload["lineup"][f"{side}_starter"][-1]["position"] = "9"
+        payload["lineup"][f"{side}_starter"][-1]["positionName"] = "BAT"
+    payload["relay"][0][0]["textOptions"].append(
+        {
+            "seqno": 3,
+            "type": 1,
+            "text": "볼",
+            "pitchNum": 4,
+            "pitchResult": "B",
+            "currentGameState": {
+                **payload["relay"][0][0]["textOptions"][1]["currentGameState"],
+                "ball": 1,
+                "strike": 0,
+            },
+            "batterRecord": {"pcode": "A2"},
+        }
+    )
+    path = tmp_path / "20260406MERGEDPA_PITCH.json"
+    path.write_text(pretty_game_json(payload), encoding="utf-8")
+
+    session = GameEditorSession.load(path)
+    findings = session.validate()["findings"]
+    merged = [finding for finding in findings if finding["code"] == "merged_pa_pitch_after_terminal"]
+
+    assert merged
+    assert merged[0]["severity"] == "error"
+    assert merged[0]["location"] == {"tab": "relay", "group_index": 0, "block_index": 0, "event_index": 2}
+
+
+def test_editor_session_validate_flags_multiple_terminal_results_as_merged_pa(tmp_path: Path):
+    payload = make_editor_payload()
+    for side in ("home", "away"):
+        payload["lineup"][f"{side}_starter"][-1]["position"] = "9"
+        payload["lineup"][f"{side}_starter"][-1]["positionName"] = "BAT"
+    payload["relay"][0][0]["textOptions"].append(
+        {
+            "seqno": 3,
+            "type": 13,
+            "text": "Away Batter 2 : 우전 안타",
+            "currentGameState": {
+                **payload["relay"][0][0]["textOptions"][1]["currentGameState"],
+                "batter": "A2",
+                "awayHit": 1,
+                "base1": True,
+                "out": 1,
+            },
+            "batterRecord": {"pcode": "A2"},
+        }
+    )
+    path = tmp_path / "20260406MERGEDPA_RESULT.json"
+    path.write_text(pretty_game_json(payload), encoding="utf-8")
+
+    session = GameEditorSession.load(path)
+    findings = session.validate()["findings"]
+    merged = [finding for finding in findings if finding["code"] == "merged_pa_multiple_terminal"]
+
+    assert merged
+    assert merged[0]["severity"] == "error"
+    assert merged[0]["location"] == {"tab": "relay", "group_index": 0, "block_index": 0, "event_index": 2}
+
+
+def test_editor_session_auto_rebuild_preserves_record_rows(tmp_path: Path):
+    payload = make_editor_payload()
+    payload["record"]["batter"]["away"][0]["kk"] = 99
+    payload["record"]["batter"]["awayTotal"]["kk"] = 99
+    payload["relay"][0][0]["textOptions"][1]["currentGameState"]["out"] = 0
+    path = tmp_path / "20260406AUTOREBUILD.json"
+    path.write_text(pretty_game_json(payload), encoding="utf-8")
+
+    session = GameEditorSession.load(path)
+    before_record = json.loads(json.dumps(session.payload["record"], ensure_ascii=False))
+
+    preview = session.preview_auto_rebuild()
+    assert preview["payload"]["relay"][0][0]["textOptions"][1]["currentGameState"]["out"] == 1
+    assert preview["payload"]["record"] == before_record
+
+    session.apply_auto_rebuild()
+
+    assert session.payload["relay"][0][0]["textOptions"][1]["currentGameState"]["out"] == 1
+    assert session.payload["record"] == before_record
+
+
+def test_editor_session_insert_bat_result_preserves_record_rows(tmp_path: Path):
+    payload = make_editor_payload()
+    payload["record"]["batter"]["away"][0]["ab"] = 3
+    payload["record"]["batter"]["awayTotal"]["ab"] = 3
+    path = tmp_path / "20260406INSERTRESULT.json"
+    path.write_text(pretty_game_json(payload), encoding="utf-8")
+
+    session = GameEditorSession.load(path)
+    before_record = json.loads(json.dumps(session.payload["record"], ensure_ascii=False))
+
+    inserted = session.insert_event_template(
+        group_index=0,
+        block_index=0,
+        insert_at=2,
+        template_type="bat_result",
+        spec={
+            "batter_id": "A1",
+            "batter_name": "Away Batter 1",
+            "pitcher_id": "HP",
+            "result_type": "single",
+            "text": "Away Batter 1 : 우전 안타",
+        },
+    )
+
+    assert inserted == [2]
+    assert session.payload["relay"][0][0]["textOptions"][2]["type"] == 13
+    assert session.payload["record"] == before_record
+
+
+def test_rebuild_payload_with_record_sync_recomputes_record_rows():
+    payload = make_editor_payload()
+    payload["record"]["batter"]["away"][0]["ab"] = 99
+    payload["record"]["batter"]["away"][0]["kk"] = 99
+    payload["record"]["batter"]["awayTotal"]["ab"] = 99
+    payload["record"]["batter"]["awayTotal"]["kk"] = 99
+    payload["record"]["pitcher"]["home"][0]["inn"] = "9.0"
+
+    rebuilt, _report = rebuild_payload_with_record_sync(payload)
+
+    assert rebuilt["record"]["batter"]["away"][0]["ab"] == 0
+    assert rebuilt["record"]["batter"]["away"][0]["kk"] == 0
+    assert rebuilt["record"]["batter"]["awayTotal"]["ab"] == 0
+    assert rebuilt["record"]["batter"]["awayTotal"]["kk"] == 0
+    assert rebuilt["record"]["pitcher"]["home"][0]["inn"] == "0.1"
 
 
 def test_migrate_one_file_writes_minimal_schema(tmp_path: Path):

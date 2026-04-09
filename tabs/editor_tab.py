@@ -278,6 +278,8 @@ class CorrectionEditorTab:
 
     def _recommended_action(self, finding: dict[str, Any] | None = None) -> str:
         code = str((finding or {}).get("code") or "")
+        if code.startswith("merged_pa_"):
+            return "split_merge"
         if code.startswith("missing_") or code.startswith("state_jump"):
             return "meaning"
         if code.startswith("duplicate_") or code == "seq_gap" or code == "auto_rebuild_drift":
@@ -1071,6 +1073,9 @@ class CorrectionEditorTab:
             self._t("game_info_tab"),
             self._t("lineup_tab"),
             self._t("record_tab"),
+        ):
+            self._toggle_group(tag, True)
+        for tag in (
             self._t("validation_tab"),
             self._t("diff_tab"),
             self._t("history_tab"),
@@ -1091,7 +1096,16 @@ class CorrectionEditorTab:
                 finding = findings[self.selected_finding_index]
             self._set_active_action(self._recommended_action(finding))
             self.refresh_action_sections()
-            self._set_tab_value(self._t("detail_tabs"), self._t("relay_tab"))
+            if dpg.does_item_exist(self._t("detail_tabs")):
+                current_tab = dpg.get_value(self._t("detail_tabs"))
+                allowed_tabs = {
+                    dpg.get_alias_id(self._t("relay_tab")),
+                    dpg.get_alias_id(self._t("game_info_tab")),
+                    dpg.get_alias_id(self._t("lineup_tab")),
+                    dpg.get_alias_id(self._t("record_tab")),
+                }
+                if current_tab not in allowed_tabs:
+                    self._set_tab_value(self._t("detail_tabs"), self._t("relay_tab"))
         else:
             self._toggle_group(self._t("record_batter_editor_group"), self.selected_record_table == "batter")
             self._toggle_group(self._t("record_pitcher_editor_group"), self.selected_record_table == "pitcher")
@@ -1706,7 +1720,7 @@ class CorrectionEditorTab:
                 borders_outerH=True,
                 borders_innerV=True,
                 borders_outerV=True,
-                policy=dpg.mvTable_SizingStretchProp,
+                policy=dpg.mvTable_SizingFixedFit,
             ):
                 for label in ("start", "end", "batter", "pitcher", "result", "terminal"):
                     dpg.add_table_column(label=label)
@@ -1735,7 +1749,7 @@ class CorrectionEditorTab:
             borders_outerH=True,
             borders_innerV=True,
             borders_outerV=True,
-            policy=dpg.mvTable_SizingStretchProp,
+            policy=dpg.mvTable_SizingFixedFit,
         ):
             for label in ("#", "seqno", "type", "pitch", "ptsPitchId", "flags", "text"):
                 dpg.add_table_column(label=label)
@@ -2264,7 +2278,6 @@ class CorrectionEditorTab:
             self.selected_record_side = location.get("side", "home")
             self.selected_record_row = location.get("row_index")
             self._set_value_if_exists(self._t("record_scope"), self._record_scope_label(self.selected_record_table, self.selected_record_side))
-            self._set_value_if_exists(self._t("editor_mode"), EDITOR_MODES[1])
             self._set_tab_value(self._t("detail_tabs"), self._t("record_tab"))
             self.refresh_record_table()
             self.populate_record_editor()
@@ -2506,7 +2519,7 @@ class CorrectionEditorTab:
                     with dpg.tab_bar(tag=self._t("detail_tabs")):
                         with dpg.tab(tag=self._t("game_info_tab"), label="경기 정보"):
                             dpg.add_button(label="경기 정보 적용", callback=lambda: self.apply_game_info_editor())
-                            with dpg.child_window(tag=self._t("game_info_table"), width=-1, height=440):
+                            with dpg.child_window(tag=self._t("game_info_table"), width=-1, height=440, horizontal_scrollbar=True):
                                 pass
 
                         with dpg.tab(tag=self._t("lineup_tab"), label="라인업"):
@@ -2522,7 +2535,7 @@ class CorrectionEditorTab:
                                 dpg.add_button(label="행 삭제", callback=lambda: self.delete_lineup_row())
                                 dpg.add_button(label="행 적용", callback=lambda: self.apply_lineup_editor())
                                 dpg.add_button(label="선발 검증", callback=lambda: self.run_validation())
-                            with dpg.child_window(tag=self._t("lineup_table"), width=-1, height=440):
+                            with dpg.child_window(tag=self._t("lineup_table"), width=-1, height=440, horizontal_scrollbar=True):
                                 pass
 
                         with dpg.tab(tag=self._t("relay_tab"), label="중계"):
@@ -2544,7 +2557,7 @@ class CorrectionEditorTab:
                             with dpg.group(horizontal=True):
                                 with dpg.child_window(tag=self._t("relay_tree"), width=260, height=360, border=True):
                                     pass
-                                with dpg.child_window(tag=self._t("relay_events"), width=-1, height=360, border=True):
+                                with dpg.child_window(tag=self._t("relay_events"), width=-1, height=360, border=True, horizontal_scrollbar=True):
                                     pass
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="블록 추가", callback=lambda: self.add_block())
@@ -2568,7 +2581,7 @@ class CorrectionEditorTab:
                                 dpg.add_button(label="행 삭제", callback=lambda: self.delete_record_row())
                                 dpg.add_button(label="행 적용", callback=lambda: self.apply_record_editor())
                                 dpg.add_button(label="타자 합계 재계산", callback=lambda: self.recalc_record_totals())
-                            with dpg.child_window(tag=self._t("record_table"), width=-1, height=440):
+                            with dpg.child_window(tag=self._t("record_table"), width=-1, height=440, horizontal_scrollbar=True):
                                 pass
 
                         with dpg.tab(tag=self._t("validation_tab"), label="검증 결과"):

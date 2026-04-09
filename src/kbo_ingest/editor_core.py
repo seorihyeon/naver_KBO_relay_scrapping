@@ -875,6 +875,8 @@ class GameEditorSession:
         base = validate_game(self.payload)
         relay_findings = self.scan_relay_issues()
         rebuild_findings = self.scan_auto_rebuild_drift()
+        structured_base_findings = [dict(item) for item in base.get("structured_findings", [])]
+        structured_messages = {str(item.get("message") or "") for item in structured_base_findings}
         findings = [
             {
                 "severity": "error",
@@ -883,6 +885,7 @@ class GameEditorSession:
                 "location": self._guess_validation_location(message),
             }
             for message in base.get("issues", [])
+            if message not in structured_messages
         ]
         findings.extend(
             {
@@ -892,7 +895,9 @@ class GameEditorSession:
                 "location": self._guess_validation_location(message),
             }
             for message in base.get("warnings", [])
+            if message not in structured_messages
         )
+        findings.extend(structured_base_findings)
         findings.extend(relay_findings)
         findings.extend(rebuild_findings)
         error_count = sum(1 for item in findings if item["severity"] == "error")

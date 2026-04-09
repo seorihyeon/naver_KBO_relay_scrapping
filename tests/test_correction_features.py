@@ -150,8 +150,9 @@ def load_session(tmp_path: Path, payload: dict) -> GameEditorSession:
     return GameEditorSession.load(path)
 
 
-def test_insert_missing_plate_appearance_rebuilds_state_and_validation(tmp_path: Path):
+def test_insert_missing_plate_appearance_rebuilds_state_but_preserves_record(tmp_path: Path):
     session = load_session(tmp_path, make_valid_payload())
+    before_record = json.loads(json.dumps(session.payload["record"], ensure_ascii=False))
 
     inserted = session.insert_missing_plate_appearance(
         group_index=0,
@@ -171,15 +172,15 @@ def test_insert_missing_plate_appearance_rebuilds_state_and_validation(tmp_path:
     assert result_event["text"].endswith("\uc88c\uc804 \uc548\ud0c0")
     assert result_event["currentGameState"]["awayHit"] == 1
     assert result_event["currentGameState"]["base1"] is True
-    away_rows = {row["playerCode"]: row for row in session.payload["record"]["batter"]["away"]}
-    assert away_rows["A3"]["ab"] == 1
-    assert away_rows["A3"]["hit"] == 1
+    assert session.payload["record"] == before_record
     validation = session.validate()
-    assert validation["error_count"] == 0
+    assert validation["error_count"] > 0
+    assert any("relay에만 있는 타자" in finding["message"] for finding in validation["findings"])
 
 
-def test_update_event_meaning_out_to_double_rebuilds_record_and_state(tmp_path: Path):
+def test_update_event_meaning_out_to_double_rebuilds_state_but_preserves_record(tmp_path: Path):
     session = load_session(tmp_path, make_valid_payload())
+    before_record = json.loads(json.dumps(session.payload["record"], ensure_ascii=False))
 
     changed = session.update_event_meaning(
         group_index=0,
@@ -200,15 +201,13 @@ def test_update_event_meaning_out_to_double_rebuilds_record_and_state(tmp_path: 
     assert "2\ub8e8\ud0c0" in result_event["text"]
     assert result_event["currentGameState"]["awayHit"] == 1
     assert result_event["currentGameState"]["base2"] is True
-    away_rows = {row["playerCode"]: row for row in session.payload["record"]["batter"]["away"]}
-    assert away_rows["A1"]["ab"] == 1
-    assert away_rows["A1"]["hit"] == 1
-    assert away_rows["A1"]["kk"] == 0
+    assert session.payload["record"] == before_record
     validation = session.validate()
-    assert validation["error_count"] == 0
+    assert validation["error_count"] > 0
+    assert any("타자 A1" in finding["message"] and "불일치" in finding["message"] for finding in validation["findings"])
 
 
-def test_split_plate_appearance_reassigns_results_and_validation(tmp_path: Path):
+def test_split_plate_appearance_reassigns_results_but_preserves_record(tmp_path: Path):
     payload = make_valid_payload()
     payload["relay"][0][0]["textOptions"] = [
         {
@@ -245,6 +244,7 @@ def test_split_plate_appearance_reassigns_results_and_validation(tmp_path: Path)
         {"pcode": "HP", "name": "Home Pitcher", "inn": "0.0", "r": 0, "er": 0, "hit": 1, "bb": 0, "kk": 0, "hr": 0, "ab": 1, "bf": 1, "pa": 1, "bbhp": 0}
     ]
     session = load_session(tmp_path, payload)
+    before_record = json.loads(json.dumps(session.payload["record"], ensure_ascii=False))
 
     next_index = session.split_plate_appearance(
         group_index=0,
@@ -266,8 +266,7 @@ def test_split_plate_appearance_reassigns_results_and_validation(tmp_path: Path)
     assert texts[2].endswith("\uc0bc\uc9c4 \uc544\uc6c3")
     assert texts[3].startswith("2\ubc88\ud0c0\uc790")
     assert "2\ub8e8\ud0c0" in texts[4]
-    away_rows = {row["playerCode"]: row for row in session.payload["record"]["batter"]["away"]}
-    assert away_rows["A1"]["kk"] == 1
-    assert away_rows["A2"]["hit"] == 1
+    assert session.payload["record"] == before_record
     validation = session.validate()
-    assert validation["error_count"] == 0
+    assert validation["error_count"] > 0
+    assert any("relay에만 있는 타자" in finding["message"] or ("타자 A1" in finding["message"] and "불일치" in finding["message"]) for finding in validation["findings"])
