@@ -79,14 +79,12 @@ BASE_STATE_FIELDS = {"base1", "base2", "base3"}
 EDITOR_MODES = ["기본 모드", "고급 모드"]
 ACTION_TABS = {
     "add": "action_add_tab",
-    "missing_pa": "action_missing_pa_tab",
     "meaning": "action_meaning_tab",
     "split_merge": "action_split_merge_tab",
     "preview": "action_preview_tab",
 }
 ACTION_LABELS = {
     "add": "이벤트 추가",
-    "missing_pa": "누락 타석 복구",
     "meaning": "결과 의미 수정",
     "split_merge": "타석 분리 / 병합",
     "preview": "자동 재계산 미리보기",
@@ -137,7 +135,7 @@ RESULT_TYPE_LABELS = {
 RESULT_TYPE_LABELS_REVERSE = {label: key for key, label in RESULT_TYPE_LABELS.items()}
 FINDING_TYPE_GROUPS = {
     "전체": None,
-    "누락/점프": ("missing_", "state_jump", "seq_gap"),
+    "누락/점프": ("missing_", "state_jump", "seq_gap", "partial_plate_appearance"),
     "중복": ("duplicate_",),
     "재계산 차이": ("auto_rebuild_drift",),
     "검증 이슈": ("validate_game", "validate_game_warning"),
@@ -167,6 +165,14 @@ RELAY_VIEW_MODE_LABELS_REVERSE = {label: key for key, label in RELAY_VIEW_MODE_L
 RELAY_HALF_FILTER_LABELS = {"All": "전체", "Top": "초", "Bottom": "말"}
 RELAY_HALF_FILTER_LABELS_REVERSE = {label: key for key, label in RELAY_HALF_FILTER_LABELS.items()}
 RELAY_ALL_FILTER_LABEL = "전체"
+FINDING_COLUMN_WIDTHS = {
+    "index": 42,
+    "severity": 64,
+    "code": 150,
+    "location": 160,
+    "message": 720,
+}
+FINDING_TABLE_INNER_WIDTH = sum(FINDING_COLUMN_WIDTHS.values())
 
 
 class CorrectionEditorTab:
@@ -215,6 +221,47 @@ class CorrectionEditorTab:
     def _clear_children(self, tag: str) -> None:
         if dpg.does_item_exist(tag):
             dpg.delete_item(tag, children_only=True)
+
+    def _capture_scroll_state(self, tag: str) -> dict[str, float] | None:
+        if not dpg.does_item_exist(tag):
+            return None
+        return {
+            "x": float(dpg.get_x_scroll(tag) or 0.0),
+            "y": float(dpg.get_y_scroll(tag) or 0.0),
+        }
+
+    def _restore_scroll_state(self, tag: str, state: dict[str, float] | None) -> None:
+        if not state or not dpg.does_item_exist(tag):
+            return
+        x_value = float(state.get("x", 0.0))
+        y_value = float(state.get("y", 0.0))
+        dpg.set_x_scroll(tag, x_value)
+        dpg.set_y_scroll(tag, y_value)
+        if hasattr(dpg, "set_frame_callback") and hasattr(dpg, "get_frame_count"):
+            dpg.set_frame_callback(
+                int(dpg.get_frame_count()) + 1,
+                lambda: self._restore_scroll_state_once(tag, x_value, y_value),
+            )
+
+    def _restore_scroll_state_once(self, tag: str, x_value: float, y_value: float) -> None:
+        if not dpg.does_item_exist(tag):
+            return
+        max_x = float(dpg.get_x_scroll_max(tag) or 0.0)
+        max_y = float(dpg.get_y_scroll_max(tag) or 0.0)
+        dpg.set_x_scroll(tag, min(x_value, max_x))
+        dpg.set_y_scroll(tag, min(y_value, max_y))
+
+    def _capture_findings_scroll_state(self) -> dict[str, dict[str, float] | None]:
+        return {
+            "panel": self._capture_scroll_state(self._t("findings_table")),
+            "table": self._capture_scroll_state(self._t("findings_table_inner")),
+        }
+
+    def _restore_findings_scroll_state(self, state: dict[str, dict[str, float] | None] | None) -> None:
+        if not state:
+            return
+        self._restore_scroll_state(self._t("findings_table"), state.get("panel"))
+        self._restore_scroll_state(self._t("findings_table_inner"), state.get("table"))
 
     def _set_tab_value(self, tag: str, value: str) -> None:
         if dpg.does_item_exist(tag):
@@ -268,7 +315,6 @@ class CorrectionEditorTab:
         active = self._current_action_key()
         section_map = {
             "add": self._t("section_structured_add"),
-            "missing_pa": self._t("section_missing_pa"),
             "meaning": self._t("section_meaning_edit"),
             "split_merge": self._t("section_pa_split_merge"),
         }
@@ -280,6 +326,8 @@ class CorrectionEditorTab:
         code = str((finding or {}).get("code") or "")
         if code.startswith("merged_pa_"):
             return "split_merge"
+        if code == "partial_plate_appearance":
+            return "meaning"
         if code.startswith("missing_") or code.startswith("state_jump"):
             return "meaning"
         if code.startswith("duplicate_") or code == "seq_gap" or code == "auto_rebuild_drift":
@@ -289,9 +337,6 @@ class CorrectionEditorTab:
             if location.get("tab") == "relay":
                 return "meaning"
             return "preview"
-        pa_summary = self._selected_pa_summary()
-        if pa_summary and not pa_summary.is_terminal:
-            return "missing_pa"
         event = self._get_selected_event() or {}
         if parse_result_type(str(event.get("text") or "")):
             return "meaning"
@@ -318,6 +363,20 @@ class CorrectionEditorTab:
             if ".history" not in path.parts
         )
 
+    def apply_root_dir(self, root_dir: str) -> None:
+        normalized = str(Path(root_dir).expanduser()) if str(root_dir or "").strip() else ""
+        self._set_value_if_exists(self._t("root_dir"), normalized)
+        if normalized:
+            self.state.default_data_dir = normalized
+        self.refresh_file_list()
+
+    def on_root_dir_dialog_selected(self, _sender: Any, app_data: Any, _user_data: Any = None) -> None:
+        if not isinstance(app_data, dict):
+            return
+        selected_path = str(app_data.get("file_path_name") or "").strip()
+        if selected_path:
+            self.apply_root_dir(selected_path)
+
     def refresh_file_list(self) -> None:
         root = Path(dpg.get_value(self._t("root_dir"))).expanduser()
         query = str(dpg.get_value(self._t("search")) or "").strip().lower()
@@ -336,6 +395,11 @@ class CorrectionEditorTab:
                 current = dpg.get_value(self._t("file_list"))
                 dpg.set_value(self._t("file_list"), current if current in labels else labels[0])
         self._set_value_if_exists(self._t("file_count"), f"{len(labels)}개 파일")
+
+    def on_file_list_double_click(self, _sender: Any = None, _app_data: Any = None, _user_data: Any = None) -> None:
+        if not self.file_map:
+            return
+        self.load_selected_file()
 
     def load_selected_file(self) -> None:
         label = dpg.get_value(self._t("file_list"))
@@ -874,7 +938,7 @@ class CorrectionEditorTab:
         context = self._build_insert_context(insert_mode=insert_mode)
         pitch_result = self._selected_pitch_result()
         self._set_value_if_exists(self._t("add_pitch_result"), pitch_result or "")
-        default_pitch_num = context["pitch_num_candidate"] if template_type == "pitch" else context["result_pitch_num_candidate"]
+        default_pitch_num = context["pitch_num_candidate"] if template_type == "pitch" else None
         self._set_value_if_exists(self._t("add_pitch_num"), "" if default_pitch_num is None else str(default_pitch_num))
         self._set_value_if_exists(self._t("add_batter_id"), context["batter_id"] or "")
         self._set_value_if_exists(self._t("add_batter_name"), context["batter_name"] or "")
@@ -907,7 +971,7 @@ class CorrectionEditorTab:
             lines.append(f"투구 번호 후보: {context['pitch_num_candidate']} / seqno 후보: {context['seqno_candidate']}")
         elif template_type == "bat_result":
             result_pitch_num = context["result_pitch_num_candidate"]
-            lines.append(f"연결 투구 번호: {'-' if result_pitch_num is None else result_pitch_num} / seqno 후보: {context['seqno_candidate']}")
+            lines.append(f"직전 투구 번호 참고: {'-' if result_pitch_num is None else result_pitch_num} / seqno 후보: {context['seqno_candidate']}")
         else:
             lines.append(f"seqno 후보: {context['seqno_candidate']} / 기준 이벤트: {context['selected_text']}")
         if not context["same_plate_appearance"]:
@@ -1221,6 +1285,7 @@ class CorrectionEditorTab:
             self._last_validation_signatures = set()
             self._set_value_if_exists(self._t("finding_summary"), "검증 결과 없음")
             self._set_value_if_exists(self._t("finding_delta"), "")
+            self._refresh_selected_finding_detail()
             return
         previous = self._last_validation_signatures
         self.validation_result = self.session.validate()
@@ -1233,6 +1298,7 @@ class CorrectionEditorTab:
             f"오류 {self.validation_result['error_count']}건 / 경고 {self.validation_result['warning_count']}건",
         )
         self._update_validation_delta_text(previous, current)
+        self._refresh_selected_finding_detail()
 
     def refresh_all_views(self) -> None:
         self.auto_preview = None
@@ -1293,7 +1359,9 @@ class CorrectionEditorTab:
             borders_outerH=True,
             borders_innerV=True,
             borders_outerV=True,
-            policy=dpg.mvTable_SizingStretchProp,
+            policy=dpg.mvTable_SizingFixedFit,
+            resizable=True,
+            no_host_extendX=True,
         ):
             dpg.add_table_column(label="Field")
             dpg.add_table_column(label="Value")
@@ -1359,7 +1427,9 @@ class CorrectionEditorTab:
             borders_outerH=True,
             borders_innerV=True,
             borders_outerV=True,
-            policy=dpg.mvTable_SizingStretchProp,
+            policy=dpg.mvTable_SizingFixedFit,
+            resizable=True,
+            no_host_extendX=True,
         ):
             for label in ("#", "playerCode", "playerName", "position", "batorder", "group"):
                 dpg.add_table_column(label=label)
@@ -1983,7 +2053,6 @@ class CorrectionEditorTab:
         elif template_type == "bat_result":
             spec["result_type"] = self._selected_result_type("add")
             spec["detail"] = self._input_text_value(self._t("add_detail"))
-            spec["pitch_num"] = context["result_pitch_num_candidate"]
             spec["runner_moves"] = self._input_runner_moves("add")
         elif template_type == "baserunning":
             spec["runner_moves"] = self._input_runner_moves("add")
@@ -2169,6 +2238,34 @@ class CorrectionEditorTab:
             source="수정/보정",
         )
 
+    def _selected_finding(self) -> dict[str, Any] | None:
+        findings = (self.validation_result or {}).get("findings", [])
+        if self.selected_finding_index is None:
+            return None
+        if 0 <= self.selected_finding_index < len(findings):
+            return findings[self.selected_finding_index]
+        return None
+
+    def _finding_detail_value(self, finding: dict[str, Any] | None = None) -> str:
+        if self.validation_result is None:
+            return "검증 결과가 없습니다."
+        findings = self.validation_result.get("findings", [])
+        if not findings:
+            return "현재 검증 문제는 없습니다."
+        finding = finding or self._selected_finding()
+        if finding is None:
+            return "문제 목록에서 항목을 선택하면 전체 설명이 표시됩니다."
+        severity = "오류" if str(finding.get("severity", "")) == "error" else "경고"
+        code = str(finding.get("code", "") or "-")
+        location = self._finding_location_text(finding)
+        message = str(finding.get("message", "") or "-")
+        return f"[{severity}] {code}\n위치: {location}\n\n{message}"
+
+    def _refresh_selected_finding_detail(self) -> None:
+        detail_text = self._finding_detail_value()
+        self._set_value_if_exists(self._t("finding_detail_text"), detail_text)
+        self._set_value_if_exists(self._t("validation_hint_text"), detail_text)
+
     def _finding_location_text(self, finding: dict[str, Any]) -> str:
         location = finding.get("location") or {}
         tab = location.get("tab")
@@ -2225,7 +2322,43 @@ class CorrectionEditorTab:
             return False
         return True
 
-    def refresh_finding_table(self) -> None:
+    def _finding_preview_text(self, finding: dict[str, Any]) -> str:
+        message = " ".join(str(finding.get("message") or "").split())
+        if len(message) <= 120:
+            return message
+        return f"{message[:117]}..."
+
+    def refresh_finding_table(self, scroll_state: dict[str, dict[str, float] | None] | None = None) -> None:
+        def add_finding_selectable(value: Any, index: int) -> None:
+            text = str(value or "-")
+            dpg.add_selectable(
+                label=text,
+                default_value=index == self.selected_finding_index,
+                callback=lambda _s, _a, user_data: self.select_finding(user_data),
+                user_data=index,
+                width=-1,
+            )
+
+        def add_finding_text_cell(value: Any, index: int, column: str, *, tooltip_text: str | None = None) -> None:
+            text = str(value or "-")
+            text_tag = self._t(f"finding_cell_{column}_{index}")
+            handler_tag = self._t(f"finding_cell_handler_{column}_{index}")
+            if dpg.does_item_exist(handler_tag):
+                dpg.delete_item(handler_tag)
+            item = dpg.add_text(text, tag=text_tag)
+            with dpg.item_handler_registry(tag=handler_tag):
+                dpg.add_item_clicked_handler(
+                    callback=lambda _s, _a, user_data: self.select_finding(user_data),
+                    user_data=index,
+                )
+            dpg.bind_item_handler_registry(item, handler_tag)
+            tooltip_value = tooltip_text if tooltip_text is not None else text
+            if tooltip_value:
+                tooltip_value = str(tooltip_value)
+                with dpg.tooltip(item):
+                    dpg.add_text(tooltip_value, wrap=420)
+
+        preserved_scroll_state = scroll_state or self._capture_findings_scroll_state()
         self._clear_children(self._t("findings_table"))
         self._refresh_finding_filter_items()
         with dpg.table(
@@ -2237,39 +2370,52 @@ class CorrectionEditorTab:
             borders_outerH=True,
             borders_innerV=True,
             borders_outerV=True,
-            policy=dpg.mvTable_SizingStretchProp,
+            policy=dpg.mvTable_SizingFixedFit,
+            width=-1,
+            scrollX=True,
+            inner_width=FINDING_TABLE_INNER_WIDTH,
+            resizable=True,
+            no_host_extendX=False,
+            precise_widths=True,
         ):
-            for label in ("#", "심각도", "유형", "위치", "설명"):
-                dpg.add_table_column(label=label)
+            dpg.add_table_column(label="#", width=FINDING_COLUMN_WIDTHS["index"], init_width_or_weight=FINDING_COLUMN_WIDTHS["index"], width_fixed=True)
+            dpg.add_table_column(label="심각도", width=FINDING_COLUMN_WIDTHS["severity"], init_width_or_weight=FINDING_COLUMN_WIDTHS["severity"], width_fixed=True)
+            dpg.add_table_column(label="유형", width=FINDING_COLUMN_WIDTHS["code"], init_width_or_weight=FINDING_COLUMN_WIDTHS["code"], width_fixed=True)
+            dpg.add_table_column(label="위치", width=FINDING_COLUMN_WIDTHS["location"], init_width_or_weight=FINDING_COLUMN_WIDTHS["location"], width_fixed=True)
+            dpg.add_table_column(label="설명", width=FINDING_COLUMN_WIDTHS["message"], init_width_or_weight=FINDING_COLUMN_WIDTHS["message"], width_fixed=True)
             findings = (self.validation_result or {}).get("findings", [])
             for index, finding in enumerate(findings):
                 if not self._finding_matches_filters(finding):
                     continue
+                severity_text = "오류" if str(finding.get("severity", "")) == "error" else "경고"
+                code_text = str(finding.get("code", ""))
+                location_text = self._finding_location_text(finding)
+                preview_text = self._finding_preview_text(finding)
+                message_text = str(finding.get("message", "") or "")
                 with dpg.table_row():
-                    dpg.add_selectable(
-                        label=str(index),
-                        default_value=index == self.selected_finding_index,
-                        callback=lambda _s, _a, user_data: self.select_finding(user_data),
-                        user_data=index,
-                    )
-                    dpg.add_text("오류" if str(finding.get("severity", "")) == "error" else "경고")
-                    dpg.add_text(str(finding.get("code", "")))
-                    dpg.add_text(self._finding_location_text(finding))
-                    dpg.add_text(str(finding.get("message", "")))
+                    add_finding_selectable(str(index), index)
+                    add_finding_text_cell(severity_text, index, "severity")
+                    add_finding_text_cell(code_text, index, "code")
+                    add_finding_text_cell(location_text, index, "location")
+                    add_finding_text_cell(preview_text, index, "message", tooltip_text=message_text or preview_text)
+        self._restore_findings_scroll_state(preserved_scroll_state)
+        self._refresh_selected_finding_detail()
 
     def select_finding(self, index: int) -> None:
+        scroll_state = self._capture_findings_scroll_state()
         self.selected_finding_index = index
         findings = (self.validation_result or {}).get("findings", [])
         if not (0 <= index < len(findings)):
             return
         finding = findings[index]
+        self._refresh_selected_finding_detail()
         location = finding.get("location")
         if location:
             self.jump_to_location(location)
         self._set_active_action(self._recommended_action(finding))
         self.refresh_context_summary()
         self.apply_editor_mode()
-        self.refresh_finding_table()
+        self.refresh_finding_table(scroll_state=scroll_state)
 
     def jump_to_location(self, location: dict[str, Any]) -> None:
         tab = location.get("tab")
@@ -2338,6 +2484,7 @@ class CorrectionEditorTab:
             )
         changed_paths = self.auto_preview.get("changed_paths", [])
         lines = [
+            f"record_sync={'yes' if self.auto_preview.get('sync_record') else 'no'}",
             f"changed_paths={len(changed_paths)}",
             "",
             self.auto_preview.get("diff") or "(no auto rebuild diff)",
@@ -2349,20 +2496,32 @@ class CorrectionEditorTab:
         self._set_value_if_exists(self._t("auto_preview_text"), preview_text)
         self._set_value_if_exists(self._t("basic_auto_preview_text"), preview_text)
 
-    def refresh_auto_preview(self) -> None:
+    def refresh_auto_preview(self, *, sync_record: bool = False) -> None:
         session = self._session_required()
         if session is None:
             return
-        self.auto_preview = session.preview_auto_rebuild()
+        self.auto_preview = session.preview_auto_rebuild(sync_record=sync_record)
         self.refresh_auto_preview_text()
 
     def apply_auto_rebuild(self) -> None:
         session = self._session_required()
         if session is None:
             return
-        session.apply_auto_rebuild()
+        result = session.apply_auto_rebuild()
         self.auto_preview = None
         self.refresh_all_views()
+        changed_count = len(result.get("changed_paths") or [])
+        self.state.set_status("info", "자동 재계산 적용", f"changed_paths={changed_count}", source="수정/보정")
+
+    def sync_record_with_relay(self) -> None:
+        session = self._session_required()
+        if session is None:
+            return
+        result = session.sync_record_with_relay()
+        self.auto_preview = None
+        self.refresh_all_views()
+        changed_count = len(result.get("changed_paths") or [])
+        self.state.set_status("info", "기록 동기화 완료", f"relay 기준으로 record를 다시 계산했습니다. changed_paths={changed_count}", source="수정/보정")
 
     def save_current_file(self) -> None:
         session = self._session_required()
@@ -2410,6 +2569,9 @@ class CorrectionEditorTab:
         center_w = max(500, available_w - file_w - detail_w - 30)
         body_h = max(460, int(content_h) - 120)
         relay_h = max(220, body_h - 260)
+        file_panel_h = max(190, min(240, int(body_h * 0.32)))
+        findings_panel_h = max(240, body_h - file_panel_h - 10)
+        findings_table_h = max(150, findings_panel_h - 210)
 
         self.header_toolbar.set_width(available_w)
         self.loaded_toolbar.set_width(available_w)
@@ -2419,16 +2581,20 @@ class CorrectionEditorTab:
         if dpg.does_item_exist(self._t("search")):
             dpg.configure_item(self._t("search"), width=max(160, min(280, int(available_w * 0.2))))
 
-        for tag, width in ((self._t("file_panel"), file_w), (self._t("center_panel"), center_w), (self._t("detail_panel"), detail_w)):
+        for tag, width, height in (
+            (self._t("file_panel"), file_w, file_panel_h),
+            (self._t("findings_panel"), file_w, findings_panel_h),
+            (self._t("center_panel"), center_w, body_h),
+            (self._t("detail_panel"), detail_w, body_h),
+        ):
             if dpg.does_item_exist(tag):
-                dpg.configure_item(tag, width=width, height=body_h)
+                dpg.configure_item(tag, width=width, height=height)
 
         self._configure_detail_field_widths(detail_w)
         for tag in (
             self._t("game_info_table"),
             self._t("lineup_table"),
             self._t("record_table"),
-            self._t("findings_table"),
             self._t("diff_text"),
             self._t("history_text"),
             self._t("auto_preview_text"),
@@ -2436,6 +2602,14 @@ class CorrectionEditorTab:
         ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, height=body_h - 90)
+        if dpg.does_item_exist(self._t("findings_table")):
+            dpg.configure_item(self._t("findings_table"), height=findings_table_h)
+        if dpg.does_item_exist(self._t("finding_detail_text")):
+            dpg.configure_item(self._t("finding_detail_text"), height=110)
+        if dpg.does_item_exist(self._t("finding_delta")):
+            dpg.configure_item(self._t("finding_delta"), height=110)
+        if dpg.does_item_exist(self._t("validation_hint_text")):
+            dpg.configure_item(self._t("validation_hint_text"), height=150)
         if dpg.does_item_exist(self._t("context_summary_text")):
             dpg.configure_item(self._t("context_summary_text"), height=120)
         if dpg.does_item_exist(self._t("context_flow_text")):
@@ -2449,7 +2623,15 @@ class CorrectionEditorTab:
         with dpg.tab(label="수정/보정", parent=parent):
             header_row = self.header_toolbar.build()
             dpg.add_text("루트 경로", parent=header_row)
-            dpg.add_input_text(tag=self._t("root_dir"), width=320, default_value=self.state.default_data_dir, parent=header_row)
+            dpg.add_input_text(
+                tag=self._t("root_dir"),
+                width=320,
+                default_value=self.state.default_data_dir,
+                parent=header_row,
+                on_enter=True,
+                callback=lambda: self.refresh_file_list(),
+            )
+            dpg.add_button(label="폴더 선택", parent=header_row, callback=lambda: dpg.configure_item(self._t("root_dir_dialog"), show=True))
             dpg.add_text("검색", parent=header_row)
             dpg.add_input_text(tag=self._t("search"), width=220, parent=header_row, callback=lambda: self.refresh_file_list())
             with dpg.group(horizontal=True, parent=header_row):
@@ -2461,6 +2643,15 @@ class CorrectionEditorTab:
                 dpg.add_button(label="검증", callback=lambda: self.run_validation())
                 dpg.add_button(label="세션 되돌리기", callback=lambda: self.revert_session())
                 dpg.add_button(label="백업 복원", callback=lambda: self.restore_backup())
+            with dpg.file_dialog(
+                directory_selector=True,
+                show=False,
+                callback=self.on_root_dir_dialog_selected,
+                tag=self._t("root_dir_dialog"),
+                width=640,
+                height=480,
+            ):
+                dpg.add_file_extension(".*")
 
             loaded_row = self.loaded_toolbar.build()
             with dpg.group(horizontal=True, parent=loaded_row):
@@ -2475,45 +2666,58 @@ class CorrectionEditorTab:
                 dpg.add_text("선택된 항목 없음", tag=self._t("selection_summary"))
 
             with dpg.group(horizontal=True, tag=self._t("workspace")):
-                with dpg.child_window(tag=self._t("file_panel"), width=260, height=540, border=True):
-                    dpg.add_text("경기 파일")
-                    dpg.add_text("0 files", tag=self._t("file_count"))
-                    dpg.add_listbox(tag=self._t("file_list"), items=[], width=-1, num_items=24)
-                    dpg.add_separator()
-                    dpg.add_text("문제 목록")
-                    dpg.add_text("-", tag=self._t("finding_summary"))
-                    with dpg.group(horizontal=True):
-                        dpg.add_combo(
-                            tag=self._t("finding_type_filter"),
-                            items=list(FINDING_TYPE_GROUPS),
-                            default_value="전체",
-                            width=110,
+                with dpg.group(tag=self._t("left_panel")):
+                    with dpg.child_window(tag=self._t("file_panel"), width=260, height=220, border=True):
+                        dpg.add_text("경기 파일")
+                        dpg.add_text("0 files", tag=self._t("file_count"))
+                        dpg.add_listbox(tag=self._t("file_list"), items=[], width=-1, num_items=12)
+                        with dpg.item_handler_registry(tag=self._t("file_list_handler")):
+                            dpg.add_item_double_clicked_handler(callback=lambda: self.on_file_list_double_click())
+                        dpg.bind_item_handler_registry(self._t("file_list"), self._t("file_list_handler"))
+                    dpg.add_spacer(height=10)
+                    with dpg.child_window(tag=self._t("findings_panel"), width=260, height=310, border=True):
+                        dpg.add_text("문제 목록")
+                        dpg.add_text("-", tag=self._t("finding_summary"))
+                        with dpg.group(horizontal=True):
+                            dpg.add_combo(
+                                tag=self._t("finding_type_filter"),
+                                items=list(FINDING_TYPE_GROUPS),
+                                default_value="전체",
+                                width=110,
+                                callback=lambda: self.refresh_finding_table(),
+                            )
+                            dpg.add_combo(
+                                tag=self._t("finding_inning_filter"),
+                                items=["전체"],
+                                default_value="전체",
+                                width=70,
+                                callback=lambda: self.refresh_finding_table(),
+                            )
+                            dpg.add_combo(
+                                tag=self._t("finding_half_filter"),
+                                items=["전체", "초", "말"],
+                                default_value="전체",
+                                width=70,
+                                callback=lambda: self.refresh_finding_table(),
+                            )
+                        dpg.add_input_text(
+                            tag=self._t("finding_query"),
+                            hint="문제 유형 / 문구 검색",
+                            width=-1,
                             callback=lambda: self.refresh_finding_table(),
                         )
-                        dpg.add_combo(
-                            tag=self._t("finding_inning_filter"),
-                            items=["전체"],
-                            default_value="전체",
-                            width=70,
-                            callback=lambda: self.refresh_finding_table(),
+                        with dpg.child_window(tag=self._t("findings_table"), width=-1, height=220, border=True, horizontal_scrollbar=True):
+                            pass
+                        dpg.add_input_text(
+                            tag=self._t("finding_detail_text"),
+                            multiline=True,
+                            readonly=True,
+                            width=-1,
+                            height=110,
+                            default_value="문제 목록에서 항목을 선택하면 전체 설명이 표시됩니다.",
                         )
-                        dpg.add_combo(
-                            tag=self._t("finding_half_filter"),
-                            items=["전체", "초", "말"],
-                            default_value="전체",
-                            width=70,
-                            callback=lambda: self.refresh_finding_table(),
-                        )
-                    dpg.add_input_text(
-                        tag=self._t("finding_query"),
-                        hint="문제 유형 / 문구 검색",
-                        width=-1,
-                        callback=lambda: self.refresh_finding_table(),
-                    )
-                    with dpg.child_window(tag=self._t("findings_table"), width=-1, height=220, border=True):
-                        pass
-                    with dpg.collapsing_header(label="검증 변화", default_open=False):
-                        dpg.add_input_text(tag=self._t("finding_delta"), multiline=True, readonly=True, width=-1, height=110)
+                        with dpg.collapsing_header(label="검증 변화", default_open=False):
+                            dpg.add_input_text(tag=self._t("finding_delta"), multiline=True, readonly=True, width=-1, height=110)
 
                 with dpg.child_window(tag=self._t("center_panel"), width=840, height=540, border=True):
                     with dpg.tab_bar(tag=self._t("detail_tabs")):
@@ -2562,17 +2766,11 @@ class CorrectionEditorTab:
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="블록 추가", callback=lambda: self.add_block())
                                 dpg.add_button(label="블록 삭제", callback=lambda: self.delete_block())
-                                dpg.add_button(label="블록 위로", callback=lambda: self.move_block(-1))
-                                dpg.add_button(label="블록 아래로", callback=lambda: self.move_block(+1))
-                                dpg.add_button(label="이벤트 추가", callback=lambda: self.add_event())
                                 dpg.add_button(label="이벤트 복제", callback=lambda: self.duplicate_event())
                                 dpg.add_button(label="이벤트 삭제", callback=lambda: self.delete_event())
-                                dpg.add_button(label="이벤트 위로", callback=lambda: self.move_event(-1))
-                                dpg.add_button(label="이벤트 아래로", callback=lambda: self.move_event(+1))
                                 dpg.add_button(label="seq 재정렬", callback=lambda: self.renumber_seqno())
                                 dpg.add_button(label="빈 state 채우기", callback=lambda: self.fill_missing_state())
                                 dpg.add_button(label="미리보기", callback=lambda: self.refresh_auto_preview())
-                                dpg.add_button(label="자동 재계산", callback=lambda: self.apply_auto_rebuild())
 
                         with dpg.tab(tag=self._t("record_tab"), label="기록"):
                             with dpg.group(horizontal=True):
@@ -2581,16 +2779,17 @@ class CorrectionEditorTab:
                                 dpg.add_button(label="행 삭제", callback=lambda: self.delete_record_row())
                                 dpg.add_button(label="행 적용", callback=lambda: self.apply_record_editor())
                                 dpg.add_button(label="타자 합계 재계산", callback=lambda: self.recalc_record_totals())
+                                dpg.add_button(label="relay 기준 기록 동기화", callback=lambda: self.sync_record_with_relay())
                             with dpg.child_window(tag=self._t("record_table"), width=-1, height=440, horizontal_scrollbar=True):
                                 pass
 
                         with dpg.tab(tag=self._t("validation_tab"), label="검증 결과"):
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="검증 실행", callback=lambda: self.run_validation())
-                                dpg.add_text("문제 목록은 좌측 패널에서 확인하세요.")
+                                dpg.add_text("좌측 목록을 고르면 전체 메시지가 아래에 표시됩니다.")
                             with dpg.child_window(tag=self._t("validation_placeholder"), width=-1, height=120):
                                 pass
-                            dpg.add_input_text(tag=self._t("validation_hint_text"), multiline=True, readonly=True, width=-1, height=120, default_value="좌측 패널의 문제 목록이 기본 진입점입니다.\n고급 모드에서는 이 탭에서 검증을 다시 실행할 수 있습니다.")
+                            dpg.add_input_text(tag=self._t("validation_hint_text"), multiline=True, readonly=True, width=-1, height=150, default_value="문제 목록에서 항목을 선택하면 전체 설명이 여기에 표시됩니다.")
 
                         with dpg.tab(tag=self._t("diff_tab"), label="차이점"):
                             dpg.add_input_text(tag=self._t("diff_text"), multiline=True, readonly=True, width=-1, height=440)
@@ -2602,6 +2801,8 @@ class CorrectionEditorTab:
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="미리보기 갱신", callback=lambda: self.refresh_auto_preview())
                                 dpg.add_button(label="자동 재계산 적용", callback=lambda: self.apply_auto_rebuild())
+                                dpg.add_button(label="기록 동기화 미리보기", callback=lambda: self.refresh_auto_preview(sync_record=True))
+                                dpg.add_button(label="자동 재계산 + 기록 동기화", callback=lambda: self.sync_record_with_relay())
                             dpg.add_input_text(tag=self._t("auto_preview_text"), multiline=True, readonly=True, width=-1, height=440)
 
                 with dpg.child_window(tag=self._t("detail_panel"), width=480, height=540, border=True):
@@ -2624,7 +2825,7 @@ class CorrectionEditorTab:
                             dpg.add_button(label="저장", callback=lambda: self.save_current_file())
                         dpg.add_combo(
                             tag=self._t("action_selector"),
-                            items=[ACTION_LABELS[key] for key in ("add", "missing_pa", "meaning", "split_merge", "preview")],
+                            items=[ACTION_LABELS[key] for key in ("add", "meaning", "split_merge", "preview")],
                             default_value=ACTION_LABELS["meaning"],
                             width=-1,
                             callback=lambda: self.refresh_action_sections(),
@@ -2747,26 +2948,6 @@ class CorrectionEditorTab:
                             self._add_runner_move_editor("add", count=3, title_prefix="주자")
                         dpg.add_button(label="이 이벤트 추가", callback=lambda: self.insert_structured_event())
                     dpg.add_separator(parent=self._t("basic_mode_panel"))
-                    with dpg.collapsing_header(tag=self._t("section_missing_pa"), label="누락 타석 복구", default_open=True, parent=self._t("basic_mode_panel")):
-                        self._add_labeled_combo(
-                            self._t("pa_insert_mode"),
-                            "삽입 위치",
-                            items=list(INSERT_MODE_LABELS.values()),
-                            default_value=INSERT_MODE_LABELS["before"],
-                            callback=lambda: self.populate_structured_editors(),
-                        )
-                        for field in ("batter_id", "batter_name", "pitcher_id", "detail", "result_text", "pitch_result", "pitch_num", "pts_pitch_id"):
-                            self._add_labeled_input_text(self._t(f"pa_{field}"), field)
-                        self._add_labeled_combo(
-                            self._t("pa_result_type"),
-                            "결과 유형",
-                            items=[RESULT_TYPE_LABELS[key] for key in RESULT_TYPES],
-                            default_value=RESULT_TYPE_LABELS["single"],
-                        )
-                        self._add_pa_pitch_editor("pa", count=5)
-                        self._add_runner_move_editor("pa", count=3)
-                        dpg.add_button(label="누락 타석 삽입", callback=lambda: self.insert_missing_plate_appearance())
-                    dpg.add_separator(parent=self._t("basic_mode_panel"))
                     with dpg.collapsing_header(tag=self._t("section_meaning_edit"), label="결과 의미 수정", default_open=True, parent=self._t("basic_mode_panel")):
                         for field in ("batter_id", "batter_name", "pitcher_id", "detail", "text", "pitch_result", "pitch_num", "pts_pitch_id"):
                             self._add_labeled_input_text(self._t(f"meaning_{field}"), field)
@@ -2812,6 +2993,8 @@ class CorrectionEditorTab:
                         with dpg.group(horizontal=True):
                             dpg.add_button(label="미리보기 갱신", callback=lambda: self.refresh_auto_preview())
                             dpg.add_button(label="자동 재계산 적용", callback=lambda: self.apply_auto_rebuild())
+                            dpg.add_button(label="기록 동기화 미리보기", callback=lambda: self.refresh_auto_preview(sync_record=True))
+                            dpg.add_button(label="자동 재계산 + 기록 동기화", callback=lambda: self.sync_record_with_relay())
                             dpg.add_button(label="실행 취소", callback=lambda: self.undo())
                             dpg.add_button(label="다시 실행", callback=lambda: self.redo())
                         dpg.add_input_text(tag=self._t("basic_auto_preview_text"), multiline=True, readonly=True, width=-1, height=180)

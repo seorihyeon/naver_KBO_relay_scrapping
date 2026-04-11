@@ -7,6 +7,7 @@ import difflib
 import getpass
 import json
 from pathlib import Path
+import re
 from typing import Any, Callable
 
 from .correction_engine import (
@@ -16,6 +17,7 @@ from .correction_engine import (
     merge_with_previous_plate_appearance as engine_merge_with_previous_plate_appearance,
     preview_split_plate_appearance_from_event as engine_preview_split_plate_appearance_from_event,
     rebuild_payload,
+    rebuild_payload_with_record_sync,
     split_plate_appearance_from_event as engine_split_plate_appearance_from_event,
     split_plate_appearance as engine_split_plate_appearance,
     summarize_plate_appearances,
@@ -23,6 +25,7 @@ from .correction_engine import (
 )
 from .game_validation import validate_game
 from .game_json import CURRENT_GAME_STATE_FIELDS, load_game_payload, pretty_game_json
+from .pa_scoring import classify_event as classify_relay_event, score_relay_plate_appearances
 
 
 JsonDict = dict[str, Any]
@@ -40,6 +43,7 @@ SCORE_STATE_KEYS = (
     "homeError",
     "awayError",
 )
+BATTER_INTRO_RE = re.compile(r"^(?:(?P<order>\d+)\ubc88\ud0c0\uc790|\ub300\ud0c0)\s+(?P<name>\S+)")
 
 
 @dataclass
@@ -130,6 +134,34 @@ def _normalize_int(value: Any) -> int | None:
 
 def _current_state_value(event: JsonDict, key: str) -> Any:
     return (event.get("currentGameState") or {}).get(key)
+
+
+def _event_batter_id(event: JsonDict) -> str | None:
+    state = event.get("currentGameState") or {}
+    batter_id = state.get("batter") or (event.get("batterRecord") or {}).get("pcode")
+    batter_text = str(batter_id or "").strip()
+    return batter_text or None
+
+
+def _event_pitcher_id(event: JsonDict) -> str | None:
+    state = event.get("currentGameState") or {}
+    pitcher_text = str(state.get("pitcher") or "").strip()
+    return pitcher_text or None
+
+
+def _is_batter_intro_text(text: str) -> bool:
+    return bool(BATTER_INTRO_RE.match((text or "").strip()))
+
+
+def _relay_event_category(event: JsonDict) -> str:
+    return classify_relay_event(
+        str(event.get("text") or ""),
+        _normalize_int(event.get("pitchNum")),
+        str(event.get("pitchResult") or "").strip() or None,
+        str(event.get("ptsPitchId") or "").strip() or None,
+        event.get("playerChange"),
+        _normalize_int(event.get("type")),
+    )
 
 
 def _allowed_state_jump_delta(key: str, event: JsonDict) -> int:
@@ -486,8 +518,9 @@ class GameEditorSession:
         self.apply_change("move_relay_event", mutator)
         return next_index[0]
 
-    def preview_auto_rebuild(self) -> dict[str, Any]:
-        rebuilt, report = rebuild_payload(self.payload)
+    def preview_auto_rebuild(self, *, sync_record: bool = False) -> dict[str, Any]:
+        rebuild_fn = rebuild_payload_with_record_sync if sync_record else rebuild_payload
+        rebuilt, report = rebuild_fn(self.payload)
         before = pretty_game_json(self.payload).splitlines()
         after = pretty_game_json(rebuilt).splitlines()
         diff = "\n".join(
@@ -505,19 +538,27 @@ class GameEditorSession:
             "changed_paths": _collect_changed_paths(self.payload, rebuilt),
             "diff": diff,
             "plate_appearances": summarize_plate_appearances(rebuilt),
+            "sync_record": sync_record,
         }
 
-    def apply_auto_rebuild(self) -> dict[str, Any]:
+    def apply_auto_rebuild(self, *, sync_record: bool = False) -> dict[str, Any]:
         preview = {}
 
         def mutator(payload: JsonDict) -> None:
-            rebuilt, report = rebuild_payload(payload)
+            rebuild_fn = rebuild_payload_with_record_sync if sync_record else rebuild_payload
+            rebuilt, report = rebuild_fn(payload)
             preview["report"] = report
+            preview["changed_paths"] = _collect_changed_paths(payload, rebuilt)
+            preview["sync_record"] = sync_record
             payload.clear()
             payload.update(rebuilt)
 
-        self.apply_change("auto_rebuild", mutator)
+        action = "auto_rebuild_with_record_sync" if sync_record else "auto_rebuild"
+        self.apply_change(action, mutator)
         return preview
+
+    def sync_record_with_relay(self) -> dict[str, Any]:
+        return self.apply_auto_rebuild(sync_record=True)
 
     def insert_event_template(
         self,
@@ -742,6 +783,7 @@ class GameEditorSession:
         seq_map: dict[int, list[tuple[int, int, int]]] = {}
         pitch_map: dict[str, list[tuple[int, int, int]]] = {}
         previous_event: tuple[int, int, int, JsonDict] | None = None
+        previous_pitch_context: dict[str, Any] | None = None
 
         for group_index, block_index, event_index, event in _iter_event_refs(self.payload):
             seqno = _normalize_int(event.get("seqno"))
@@ -794,6 +836,12 @@ class GameEditorSession:
                             )
 
             state = event.get("currentGameState") or {}
+            batter_id = _event_batter_id(event)
+            pitcher_id = _event_pitcher_id(event)
+            event_category = _relay_event_category(event)
+            pitch_num = _normalize_int(event.get("pitchNum"))
+            event_text = str(event.get("text") or "")
+
             if (event.get("pitchNum") is not None or event.get("pitchResult") or event.get("ptsPitchId")) and not state.get("pitcher"):
                 findings.append(
                     {
@@ -812,6 +860,50 @@ class GameEditorSession:
                         "location": {"tab": "relay", "group_index": group_index, "block_index": block_index, "event_index": event_index},
                     }
                 )
+
+            if previous_pitch_context is not None and (
+                previous_pitch_context["group_index"] != group_index
+                or previous_pitch_context["block_index"] != block_index
+                or _is_batter_intro_text(event_text)
+            ):
+                previous_pitch_context = None
+
+            if event_category == "pitch" and pitch_num is not None:
+                if previous_pitch_context is None or pitch_num <= previous_pitch_context["pitch_num"]:
+                    if pitch_num > 1:
+                        findings.append(
+                            {
+                                "severity": "error",
+                                "code": "missing_pitch_event",
+                                "message": (
+                                    f"투구 번호가 1부터 시작하지 않습니다: pitchNum={pitch_num} "
+                                    f"(누락 1-{pitch_num - 1}, batter={batter_id or '-'}, pitcher={pitcher_id or '-'})"
+                                ),
+                                "location": {"tab": "relay", "group_index": group_index, "block_index": block_index, "event_index": event_index},
+                            }
+                        )
+                else:
+                    previous_pitch_num = previous_pitch_context["pitch_num"]
+                    if pitch_num > previous_pitch_num + 1:
+                        findings.append(
+                            {
+                                "severity": "error",
+                                "code": "missing_pitch_event",
+                                "message": (
+                                    f"투구 번호가 연속되지 않습니다: {previous_pitch_num} -> {pitch_num} "
+                                    f"(누락 {previous_pitch_num + 1}-{pitch_num - 1}, batter={batter_id or '-'}, pitcher={pitcher_id or '-'})"
+                                ),
+                                "location": {"tab": "relay", "group_index": group_index, "block_index": block_index, "event_index": event_index},
+                            }
+                        )
+                previous_pitch_context = {
+                    "group_index": group_index,
+                    "block_index": block_index,
+                    "pitch_num": pitch_num,
+                }
+            elif event_category == "bat_result" or _is_batter_intro_text(event_text):
+                previous_pitch_context = None
+
             previous_event = (group_index, block_index, event_index, event)
 
         for seqno, refs in seq_map.items():
@@ -839,6 +931,35 @@ class GameEditorSession:
                         "location": {"tab": "relay", "group_index": group_index, "block_index": block_index, "event_index": event_index},
                     }
                 )
+
+        seq_ref_map = {
+            _normalize_int(event.get("seqno")): (group_index, block_index, event_index, event)
+            for group_index, block_index, event_index, event in _iter_event_refs(self.payload)
+            if _normalize_int(event.get("seqno")) is not None
+        }
+        for pa in score_relay_plate_appearances(self.payload.get("relay") or []).scored_plate_appearances:
+            if pa.is_terminal:
+                continue
+            start_ref = seq_ref_map.get(pa.start_seqno)
+            end_ref = seq_ref_map.get(pa.end_seqno)
+            if start_ref is None:
+                continue
+            group_index, block_index, event_index, start_event = start_ref
+            end_seq = pa.end_seqno if pa.end_seqno is not None else pa.start_seqno
+            end_event_index = end_ref[2] if end_ref is not None else event_index
+            batter_id = pa.finishing_batter_id or pa.starting_batter_id or (start_event.get("currentGameState") or {}).get("batter")
+            findings.append(
+                {
+                    "severity": "warning",
+                    "code": "partial_plate_appearance",
+                    "message": (
+                        "타석 결과가 없는 부분 타석이 남아 있습니다: "
+                        f"batter={batter_id or '-'} seq={pa.start_seqno}->{end_seq} "
+                        f"(event {event_index}->{end_event_index}). record 집계 불일치의 원인일 수 있습니다."
+                    ),
+                    "location": {"tab": "relay", "group_index": group_index, "block_index": block_index, "event_index": event_index},
+                }
+            )
 
         return findings
 

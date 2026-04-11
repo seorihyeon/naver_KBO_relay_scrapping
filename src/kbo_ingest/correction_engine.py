@@ -203,6 +203,8 @@ def _event_category(event: JsonDict) -> str:
     type_code = _safe_int(event.get("type"), 0)
     if type_code in (13, 23):
         return "bat_result"
+    if RUNNER_MOVE_RE.match(text.strip()):
+        return "baserunning"
     if parse_result_type(text) in RESULT_TYPES_REQUIRING_BAT_RESULT:
         return "bat_result"
     if pitch_num not in (None, "") or pitch_result or pts_pitch_id:
@@ -211,8 +213,6 @@ def _event_category(event: JsonDict) -> str:
         return "substitution"
     if "\ube44\ub514\uc624\ud310\ub3c5" in text:
         return "review"
-    if RUNNER_MOVE_RE.match(text.strip()):
-        return "baserunning"
     if _is_batter_intro_text(text):
         return "intro"
     return "other"
@@ -241,8 +241,11 @@ def _event_starts_new_pa_in_context(event: JsonDict, current_batter: str | None)
 
 
 def _is_terminal_event(event: JsonDict) -> bool:
-    if _event_category(event) == "bat_result":
+    category = _event_category(event)
+    if category == "bat_result":
         return True
+    if category == "baserunning":
+        return False
     result_type = parse_result_type(_event_text(event))
     return result_type in RESULT_TYPES_REQUIRING_BAT_RESULT
 
@@ -471,11 +474,6 @@ def build_event_template(
         return event
     if template_type == "bat_result":
         event["type"] = 13
-        event["pitchNum"] = pitch_num
-        if pitch_result:
-            event["pitchResult"] = pitch_result
-        if pts_pitch_id:
-            event["ptsPitchId"] = pts_pitch_id
         label = text or _result_label(result_type or "other", detail)
         batter_label = _player_name(player_index, batter_id, batter_name)
         event["text"] = f"{batter_label} : {label}" if batter_label else label
@@ -610,6 +608,33 @@ def _runner_from_slot(base_slots: dict[str, dict[str, str | None]], base: str) -
 
 def _set_runner_slot(base_slots: dict[str, dict[str, str | None]], base: str, runner_id: str | None, runner_name: str | None) -> None:
     base_slots[base] = {"id": runner_id, "name": runner_name}
+
+
+def _find_runner_slot(
+    base_slots: dict[str, dict[str, str | None]],
+    *,
+    runner_id: str | None,
+    runner_name: str | None,
+    preferred_start: str | None = None,
+) -> str | None:
+    search_order = [preferred_start] if preferred_start in {"1", "2", "3"} else []
+    search_order.extend(base for base in ("1", "2", "3") if base not in search_order)
+
+    if runner_id:
+        for base in search_order:
+            if base_slots[base]["id"] == runner_id:
+                return base
+
+    if runner_name:
+        for base in search_order:
+            if base_slots[base]["name"] == runner_name:
+                return base
+
+    if preferred_start in {"1", "2", "3"} and not runner_id and not runner_name:
+        slot = base_slots[preferred_start]
+        if slot["id"] or slot["name"]:
+            return preferred_start
+    return None
 
 
 def _score_run(
@@ -777,15 +802,27 @@ def _apply_runner_move(
     if move.start == "B":
         runner_id = move.runner_id or batter_id
         runner_name = move.runner_name or batter_name
+        runner_found = bool(runner_id or runner_name)
     else:
-        runner = _runner_from_slot(base_slots, move.start)
+        actual_start = _find_runner_slot(
+            base_slots,
+            runner_id=move.runner_id,
+            runner_name=move.runner_name,
+            preferred_start=move.start,
+        )
+        runner = _runner_from_slot(base_slots, actual_start or move.start)
         runner_id = runner["id"] or move.runner_id
         runner_name = runner["name"] or move.runner_name
-        _set_runner_slot(base_slots, move.start, None, None)
+        runner_found = actual_start is not None
+        if actual_start is not None:
+            _set_runner_slot(base_slots, actual_start, None, None)
 
     if move.end in {"1", "2", "3"}:
         _set_runner_slot(base_slots, move.end, runner_id, runner_name)
     elif move.end == "H":
+        if not runner_found:
+            _apply_base_flags(state, base_slots)
+            return
         _score_run(
             state,
             offense_side,
@@ -799,6 +836,9 @@ def _apply_runner_move(
             credit_rbi=credit_rbi,
         )
     elif move.end == "OUT":
+        if not runner_found:
+            _apply_base_flags(state, base_slots)
+            return
         state["out"] = _safe_int(state.get("out"), 0) + 1
         _bump_stat(pitcher_outs, defense_side, _normalize_player_id(state.get("pitcher")), 1)
     _apply_base_flags(state, base_slots)

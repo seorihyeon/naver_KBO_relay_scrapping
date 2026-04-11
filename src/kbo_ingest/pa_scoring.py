@@ -220,10 +220,10 @@ def classify_event(
     type_code: int | None = None,
 ) -> str:
     txt = text or ""
-    if pitch_num is not None or pitch_result or pts_pitch_id:
-        return "pitch"
     if type_code in BAT_RESULT_TYPE_CODES:
         return "bat_result"
+    if pitch_num is not None or pitch_result or pts_pitch_id:
+        return "pitch"
     if player_change:
         return "substitution"
     if "비디오 판독" in txt:

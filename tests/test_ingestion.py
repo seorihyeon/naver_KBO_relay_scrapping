@@ -76,6 +76,11 @@ def test_classify_batter_result_event_for_out_text():
     assert classify_event(text, pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None, type_code=13) == "bat_result"
 
 
+def test_classify_type_13_with_pitch_metadata_still_as_bat_result():
+    text = "\uae40\ud61c\uc131 : \uc88c\uc804 \uc548\ud0c0"
+    assert classify_event(text, pitch_num=3, pitch_result="X", pts_pitch_id="pitch-3", player_change=None, type_code=13) == "bat_result"
+
+
 def test_classify_pickoff_attempt_as_baserunning():
     assert classify_event("1\ub8e8 \uacac\uc81c \uc2dc\ub3c4", pitch_num=None, pitch_result=None, pts_pitch_id=None, player_change=None, type_code=None) == "baserunning"
 
